@@ -195,6 +195,48 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(client.renew())
         self.assertEqual(len(adapter.requests), 3)
 
+    def test_rejected_renewal_keeps_original_cookie_and_encrypted_state(self):
+        client, adapter = self.client([(200, {"errCode": -2012}, [
+            "wr_skey=rejected-session; Path=/",
+            "wr_rt=; Path=/; Max-Age=0",
+        ])] * 3)
+        client.store.save(client.http.cookies)
+        original = self.path.read_bytes()
+        self.assertFalse(client.renew())
+        self.assertEqual(client.http.cookies.get("wr_skey"), INITIAL["wr_skey"])
+        self.assertEqual(client.http.cookies.get("wr_rt"), INITIAL["wr_rt"])
+        self.assertEqual(self.path.read_bytes(), original)
+        for request in adapter.requests:
+            self.assertIn("wr_skey=" + INITIAL["wr_skey"], request.headers["Cookie"])
+            self.assertIn("wr_rt=" + INITIAL["wr_rt"], request.headers["Cookie"])
+
+    def test_first_failed_renewal_never_writes_unconfirmed_credentials(self):
+        client, _ = self.client([(401, {"succ": 0}, ["wr_rt=unconfirmed; Path=/"])] * 3)
+        self.assertFalse(client.renew())
+        self.assertFalse(self.path.exists())
+        self.assertEqual(client.http.cookies.get("wr_rt"), INITIAL["wr_rt"])
+
+    def test_non_json_renewal_rolls_back_response_cookies(self):
+        client, _ = self.client()
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b"not JSON"
+        response.cookies.set("wr_skey", "unconfirmed", domain="weread.qq.com", path="/")
+        with patch.object(client.http, "post", return_value=response):
+            self.assertFalse(client.renew())
+        self.assertEqual(client.http.cookies.get("wr_skey"), INITIAL["wr_skey"])
+        self.assertFalse(self.path.exists())
+
+    def test_network_failure_during_renewal_rolls_back_in_memory_rotation(self):
+        client, _ = self.client()
+        def interrupted_request(*args, **kwargs):
+            client.http.cookies.set("wr_rt", "unconfirmed", domain=".weread.qq.com", path="/")
+            raise requests.ConnectionError("interrupted renewal")
+        with patch.object(client.http, "post", side_effect=interrupted_request):
+            self.assertFalse(client.renew())
+        self.assertEqual(client.http.cookies.get("wr_rt"), INITIAL["wr_rt"])
+        self.assertFalse(self.path.exists())
+
     def test_missing_initial_credentials_fails_before_network(self):
         with self.assertRaisesRegex(RuntimeError, "WXREAD_CURL_BASH"):
             WeReadSession({}, {"wr_vid": "1"}, self.path)

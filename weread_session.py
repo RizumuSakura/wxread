@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from copy import deepcopy
 from email.utils import parsedate_to_datetime
 from http.cookies import SimpleCookie, CookieError
 from urllib.parse import urlsplit
@@ -100,33 +101,42 @@ class WeReadSession:
         except OSError as exc:
             raise RuntimeError("无法保存续期 Cookie，请检查 WXREAD_COOKIE_FILE 的目录权限。") from exc
 
-    def post(self, url, payload):
+    def post(self, url, payload, persist_cookies=True):
         try:
             response = self.http.post(url, json=payload, timeout=REQUEST_TIMEOUT)
         except requests.RequestException:
             # A redirect can rotate a Cookie before a subsequent connection fails.
-            self._persist()
+            if persist_cookies:
+                self._persist()
             raise
         self._merge_response_cookies(response)
-        self._persist()
+        if persist_cookies:
+            self._persist()
         return response
 
     def renew(self):
         logging.info("尝试续期登录会话。")
         for payload in COOKIE_DATA_VARIANTS:
+            # Requests applies Set-Cookie before the response is validated.
+            # A rejected renewal must not delete/replace usable credentials.
+            previous_cookies = deepcopy(self.http.cookies)
             try:
-                response = self.post(RENEW_URL, payload)
+                response = self.post(RENEW_URL, payload, persist_cookies=False)
             except requests.RequestException as exc:
+                self.http.cookies = previous_cookies
                 logging.warning("续期请求失败（%s）。", type(exc).__name__)
                 continue
             try:
                 result = response.json()
             except ValueError:
+                self.http.cookies = previous_cookies
                 logging.warning("续期接口返回非 JSON 响应，HTTP %s。", response.status_code)
                 continue
             if response.ok and isinstance(result, dict) and result.get("succ") == 1:
+                self._persist()
                 logging.info("登录会话续期成功，完整 Cookie 已加密保存。")
                 return True
+            self.http.cookies = previous_cookies
             logging.warning(
                 "续期未成功：HTTP %s，errCode=%s。",
                 response.status_code,
