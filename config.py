@@ -1,6 +1,6 @@
 # config.py 自定义配置,包括阅读次数、推送token的填写
 import os
-import re
+import shlex
 
 """
 可修改区域
@@ -85,34 +85,41 @@ def convert(curl_command):
     """提取bash接口中的headers与cookies
     支持 -H 'Cookie: xxx' 和 -b 'xxx' 两种方式的cookie提取
     """
-    # 提取 headers
-    headers_temp = {}
-    for match in re.findall(r"-H '([^:]+): ([^']+)'", curl_command):
-        headers_temp[match[0]] = match[1]
-
-    # 提取 cookies
-    cookies = {}
-    
-    # 从 -H 'Cookie: xxx' 提取
-    cookie_header = next((v for k, v in headers_temp.items() 
-                         if k.lower() == 'cookie'), '')
-    
-    # 从 -b 'xxx' 提取
-    cookie_b = re.search(r"-b '([^']+)'", curl_command)
-    cookie_string = cookie_b.group(1) if cookie_b else cookie_header
-    
-    # 解析 cookie 字符串
-    if cookie_string:
-        for cookie in cookie_string.split('; '):
-            if '=' in cookie:
-                key, value = cookie.split('=', 1)
-                cookies[key.strip()] = value.strip()
-    
-    # 移除 headers 中的 Cookie/cookie
-    headers = {k: v for k, v in headers_temp.items() 
-              if k.lower() != 'cookie'}
-
-    return headers, cookies
+    tokens = shlex.split(curl_command.replace('\\\r\n', '').replace('\\\n', ''))
+    parsed_headers = {}
+    cookie_headers = []
+    cookie_options = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        option, separator, value = token.partition('=')
+        if token in ('-H', '--header', '-b', '--cookie'):
+            index += 1
+            if index >= len(tokens):
+                raise ValueError('cURL 的 header/cookie 参数缺少值，请重新复制完整请求。')
+            value = tokens[index]
+            option = token
+        elif not (separator and option in ('--header', '--cookie')):
+            index += 1
+            continue
+        if option in ('-H', '--header'):
+            name, colon, content = value.partition(':')
+            if colon:
+                name = name.strip().lower()
+                if name == 'cookie':
+                    cookie_headers.append(content.strip())
+                elif name not in ('content-length', 'host'):
+                    parsed_headers[name] = content.strip()
+        else:
+            cookie_options.append(value)
+        index += 1
+    parsed_cookies = {}
+    for cookie_string in cookie_headers + cookie_options:
+        for item in cookie_string.split(';'):
+            name, separator, value = item.strip().partition('=')
+            if separator and name:
+                parsed_cookies[name] = value
+    return parsed_headers, parsed_cookies
 
 
 headers, cookies = convert(curl_str) if curl_str else (headers, cookies)

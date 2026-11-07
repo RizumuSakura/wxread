@@ -3,6 +3,8 @@ services:
     image: ghcr.io/findmover/wxread:latest
     container_name: wxread
     restart: unless-stopped
+    volumes:
+      - ./state:/app/.state
 
     environment:
       TZ: "Asia/Shanghai"
