@@ -74,6 +74,27 @@
 
 本地运行请先执行 `python -m pip install -r requirements.txt`。状态文件默认是 `.state/cookies.enc`，可用 `WXREAD_COOKIE_FILE` 指定路径；Docker Compose 已将该目录挂载到宿主机 `./state`。
 
+### 官方 Skill：按书籍查询真实进度和统计
+
+新增独立命令 `official_skill.py`，使用腾讯官方 Skill `1.0.5` 的 API Key 查询书籍信息、个人进度和阅读统计。它不会提交阅读记录，也不会把脚本等待时间当作服务端计时。
+
+公开元数据查询无需登录，例如下面的链接对应《被讨厌的勇气》，实际 `bookId` 为 `25615385`：
+
+```bash
+python official_skill.py book "https://weread.qq.com/web/reader/8b9329607186dc198b9bdab" --metadata-only
+```
+
+查询自己的累计时长，需要先在受保护的环境变量中配置 `WEREAD_API_KEY`，可在[官方 Skill 页面](https://weread.qq.com/r/weread-skills)获取。此命令不读取网页 Cookie，也不复用 `WXREAD_CURL_BASH`。
+
+```bash
+python official_skill.py book 25615385
+python official_skill.py stats --mode monthly
+# --json 可导出带明确单位的查询结果
+python official_skill.py book 25615385 --json
+```
+
+`progress=1` 表示 `1%`；时长以服务端返回的秒数换算显示，缺失数据标为“未返回”。需要核对真实阅读是否同步时，可在阅读前后各查询一次。官方查询并不证明时长会计入某项排行榜或挑战赛，API Key 的长期有效性也仍由服务端决定。
+
 ### 视频教程
 
 [![视频教程](https://github.com/user-attachments/assets/ec144869-3dbb-40fe-9bc5-f8bf1b5fce3c)](https://www.bilibili.com/video/BV1kJ6gY3En3/ "点击查看视频")
