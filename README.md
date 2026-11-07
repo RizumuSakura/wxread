@@ -103,23 +103,99 @@ python qr_login.py --sync-only --github-repo YOUR_NAME/wxread --github-environme
 
 ### 3. 可选配置
 
-Repository Variables：
+#### `READ_NUM`：每次任务的目标成功次数
+
+`READ_NUM` **不是分钟数，也不是书籍数、章节数或页数**。它控制 `main.py` 每次启动后，需要完成多少次被脚本判定为成功的阅读请求；默认 `40`。
+
+当前实现每成功一次，等待 **30 秒**，最后一次成功后也会等待。因此，在没有失败和额外延迟时：
+
+```text
+循环内的等待时间（分钟）= READ_NUM × 30 ÷ 60 = READ_NUM ÷ 2
+READ_NUM = 期望的循环等待分钟数 × 2
+```
+
+| `READ_NUM` | 循环内累计等待 | 适用示例 |
+| --- | --- | --- |
+| `1` | 约 30 秒 | 快速检查原脚本能否完成一次请求 |
+| `10` | 约 5 分钟 | 短时间试运行 |
+| `40` | 约 20 分钟 | 默认值 |
+| `60` | 约 30 分钟 | 半小时量级 |
+| `120` | 约 60 分钟 | 一小时量级 |
+| `240` | 约 120 分钟 | 两小时量级 |
+
+**例如：想让每次任务等待约一小时，填 `120`，不是 `60`。** 这里描述的是脚本等待时间，不是微信读书保证计入的阅读时长。
+
+需要注意：
+
+- 填写不带引号的正整数，如 `40`、`120`。未设置或留空时回退为 `40`；`0`、负数、小数、`20分钟` 都不是有效的运行配置。`0` 不能用来关闭定时任务。
+- 当前代码在 HTTP 成功、`succ=1` 且返回中存在 `synckey` 时计数加一；登录续期、章节修复及失败请求不占用成功次数。部分异常会有限重试，其他异常会提前终止，不保证一定完成设定次数。
+- 当前版本是先请求、成功后再等待 30 秒；日志和通知中的“分钟”也是按成功次数乘以 `0.5` 估算，不是向服务端查询得到的已认可时长。
+- 整个 Actions 的用时还包括排队、安装依赖、续期、网络请求、重试和消息推送，通常不等于表中的时间；推送失败重试也可能让任务结束得更晚。
+- `READ_NUM` **只控制单次运行的数量**，不控制每天运行几次；运行频率由工作流的 `schedule` 决定。手动执行一次也是一轮，下一轮重新从零计数，不跨任务累计剩余次数。
+- 勾选手动运行中的“仅验证 Cookie 续期”时，不执行阅读循环，也不推送消息；需要检查登录时优先使用该模式，而不是增大 `READ_NUM`。
+- 增大该值不会延长 Cookie 有效期，也不会选择目标书籍。当前 `main.py` 仍使用原项目的随机书籍、章节逻辑，不能靠此变量指定某本书；服务端实际是否计时需另行验证。
+
+**GitHub Actions 设置位置：**
+
+1. 打开仓库 **Settings → Secrets and variables → Actions → Variables**。
+2. 点击 **New repository variable**；已有同名变量时编辑它。
+3. Name 填 `READ_NUM`，Value 填例如 `120`，保存。
+4. 下次启动 `wxread` 工作流生效，已经运行中的任务不会改变。
+
+这是普通配置，放在 **Repository Variables**，不是 Secrets。当前工作流通过 `${{ vars.READ_NUM }}` 读取它；仅创建同名 Secret 不会传给 `READ_NUM`。
+
+#### 登录与通知：放在 Secrets
+
+以下为 **Repository Secrets** 或 **`AutoRead` Environment Secrets**。登录至少需要一套有效凭据，其余按需配置；没有消息通知需求时，所有推送项都可留空。
 
 | 名称 | 默认值 | 说明 |
 | --- | --- | --- |
-| `READ_NUM` | `40` | 原脚本请求次数，正整数；每次成功后的等待约 30 秒 |
+| `WXREAD_LOGIN_JSON` | 无 | **推荐登录方式**。由扫码工具生成并同步的完整登录数据，不要自行拼装或提交进仓库；工作流将它作为登录与加密缓存的初始凭据。 |
+| `WXREAD_CURL_BASH` | 无 | 兼容旧版抓包登录。已配置有效的 `WXREAD_LOGIN_JSON` 时无需再填；二者同时存在时优先使用 JSON，不会因 JSON 失效而自动回退到旧 cURL。 |
+| `PUSH_METHOD` | 空，不通知 | 只选一个渠道：`pushplus`、`wxpusher`、`telegram`、`serverchan`；不要填中文名或逗号分隔列表。只填 Token、不选择渠道不会发送通知。 |
+| `PUSHPLUS_TOKEN` | 空 | `PUSH_METHOD=pushplus` 时使用的 PushPlus Token。 |
+| `WXPUSHER_SPT` | 空 | `PUSH_METHOD=wxpusher` 时使用的 WxPusher SPT。 |
+| `TELEGRAM_BOT_TOKEN` | 空 | `PUSH_METHOD=telegram` 时使用的机器人 Token，必须同时提供 `TELEGRAM_CHAT_ID`。 |
+| `TELEGRAM_CHAT_ID` | 空 | Telegram 接收会话的 Chat ID；与机器人 Token 配套配置。 |
+| `SERVERCHAN_SPT` | 空 | `PUSH_METHOD=serverchan` 时使用的 ServerChan SendKey。 |
 
-Repository / `AutoRead` Environment Secrets：
+例如，**不需要推送**时只保留有效登录 Secret 即可；**继续使用 WxPusher** 时保留 `PUSH_METHOD=wxpusher` 和 `WXPUSHER_SPT`，其余渠道的 Token 无需配置。
 
-| 名称 | 说明 |
-| --- | --- |
-| `WXREAD_LOGIN_JSON` | 推荐，由扫码工具生成并同步 |
-| `WXREAD_CURL_BASH` | 兼容旧版配置；已使用扫码 Secret 时无需再抓包 |
-| `PUSH_METHOD` | 留空不推送，或填写 `pushplus`、`wxpusher`、`telegram`、`serverchan` |
-| `PUSHPLUS_TOKEN` | PushPlus 使用 |
-| `WXPUSHER_SPT` | WxPusher 使用 |
-| `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` | Telegram 使用 |
-| `SERVERCHAN_SPT` | ServerChan 使用 |
+仓库级 Secret 位于 **Settings → Secrets and variables → Actions → Secrets**；环境级 Secret 位于 **Settings → Environments → AutoRead → Environment secrets**。[同名 Secret 以环境级配置为准](https://docs.github.com/en/actions/reference/security/secrets#naming-your-secrets)；删除仓库级配置前先确认环境里有可用替代项，删除后无法从 GitHub 读取原值恢复。
+
+#### 本地 / Docker 的可选环境变量
+
+| 名称 | 默认值 | 生效范围与用途 |
+| --- | --- | --- |
+| `WXREAD_LOGIN_FILE` | 项目目录的 `.state/login.enc` | 本地扫码凭据文件；配套密钥位于同目录同名 `.key` 文件。更改路径时需保留两者。Compose 默认挂载 `./state` 到 `/app/.state`，不会自动转发宿主机的此变量。 |
+| `WXREAD_COOKIE_FILE` | 当前工作目录的 `.state/cookies.enc` | 后续轮换 Cookie 的加密缓存；文件与初始凭据关联。Actions 和 Compose 已固定路径，一般无需改。 |
+| `WEREAD_API_KEY` | 使用扫码已保存的 Key | 仅供 `official_skill.py` 的官方查询使用，不用于 `main.py` 的网页登录/续期，不能代替 Cookie。当前阅读工作流没有传入此变量。 |
+| `TZ` | `Asia/Shanghai` | 容器调度时区。直接运行 `main.py` 不会因为设置它而变成定时任务。 |
+| `CRON_SCHEDULE` | `0 1 * * *` | 仅 `scheduler.py` / 容器调度使用，依次为“分 时 日 月 周”；默认每天北京时间 01:00。**不改变 GitHub Actions 的 `schedule`。** |
+
+同一轮的数量在本地和 Docker 中也通过 `READ_NUM` 设置。例如 PowerShell：
+
+```powershell
+$env:READ_NUM = "120"
+python main.py
+# 只检查登录：python main.py --check-auth
+```
+
+Linux / macOS：
+
+```bash
+READ_NUM=120 python main.py
+```
+
+Docker Compose 可在与 `docker-compose.yml` 相同目录的 `.env` 文件中设置：
+
+```dotenv
+READ_NUM=120
+TZ=Asia/Shanghai
+CRON_SCHEDULE=0 1 * * *
+```
+
+修改后执行 `docker compose up -d`，让 Compose 按新环境配置重建容器；[只执行 `docker compose restart` 不会更新容器已有的环境变量](https://docs.docker.com/reference/cli/docker/compose/restart/)。这不会修改 GitHub Actions 的配置。
 
 Python 脚本本身不会自动读取 `.env` 文件。`.env.example` 是配置参考，请由终端或部署平台传入环境变量；Docker Compose 也可通过其 `.env` 插值机制传入。
 
