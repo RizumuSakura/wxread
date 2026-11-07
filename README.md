@@ -8,7 +8,8 @@
 
 - **阅读时长调节**：默认计入排行榜和挑战赛，时长可调节，默认为60分钟。
 - **定时运行推送**：可部署在GitHub Action/服务器上，支持每天定时运行并推送结果到微信。
-- **Cookie自动更新**：脚本能自动获取并更新Cookie，一次部署后面无需其它操作。
+- **Cookie自动更新**：在服务端允许续期时自动更新 Cookie，减少手动重新登录。
+- **续期状态持久化**：自动接收所有接口返回的完整 Cookie（包括 `wr_skey`、`wr_rt`），加密保存后供下一次任务使用。
 - **轻量化设计**：本脚本实现了轻量化的编写，部署服务器/GIthub action后到点运行，无需额外硬件。
 
 ***
@@ -53,6 +54,24 @@
 
 **重要：除了READ_NUM配置在varables，其它的都配置在secrets里面的；需要推送`PUSH_METHOD`是必填的。**
 
+### Cookie 续期与失效处理
+
+旧版每次 Actions 都从最初的 Secret 开始，只在内存中修改截断后的 `wr_skey`，未保存其余轮换 Cookie。因此即使日志显示刷新成功，后续任务也可能继续使用几周前的登录凭据。
+
+新版使用统一的 HTTP Session，接收续期、阅读和修复接口下发的全部 Cookie，保留完整值及过期时间，并在收到响应后立即写入加密状态文件。Actions 会在执行前恢复最新状态，并在任务失败时也尝试保存已经更新的状态；不需要新增 PAT 或授予 Secrets 写入权限。日志不会输出 Cookie 值。
+
+启用方法：
+
+1. 更新代码和 `.github/workflows/deploy.yml`，保留每天运行的定时任务。
+2. 如果原 Cookie 已经失效，请在微信读书网页版重新登录，复制完整 `read` 请求的 **cURL (bash)**，更新 `WXREAD_CURL_BASH`。应包含 `wr_vid`、`wr_skey`，以及用于长期续期的 `wr_rt`（若网页下发）。仓库或 `AutoRead` 环境中若存在同名 Secret，要更新工作流实际使用的那一个。
+3. 手动运行一次 `wxread` 工作流，可勾选“仅验证 Cookie 续期”进行快速检查（不阅读、不推送）。正常日志会显示“完整 Cookie 已加密保存”；第二次运行应显示“已恢复上次运行保存的 Cookie”。首次运行没有缓存是正常的。
+
+缓存中只有 Fernet 加密后的 `.state/cookies.enc`。加密密钥从初始 Cookie Secret 派生，缓存标识使用独立的单向摘要；更换初始 Cookie 会自动隔离旧缓存并重新初始化。不要上传原始 Cookie 文件或把 Cookie 提交到仓库。
+
+续期只能维护服务器仍允许续期的会话；强制退出、撤销授权、刷新凭据到期或服务器拒绝续期时，仍需重新登录更新 Secret，无法保证永久有效。若任务长时间停用、缓存被清理或定时任务未执行，也可能需要重新初始化。连续鉴权失败会有限重试后停止并通过已配置渠道通知，不再无限循环刷新。
+
+本地运行请先执行 `python -m pip install -r requirements.txt`。状态文件默认是 `.state/cookies.enc`，可用 `WXREAD_COOKIE_FILE` 指定路径；Docker Compose 已将该目录挂载到宿主机 `./state`。
+
 ### 视频教程
 
 [![视频教程](https://github.com/user-attachments/assets/ec144869-3dbb-40fe-9bc5-f8bf1b5fce3c)](https://www.bilibili.com/video/BV1kJ6gY3En3/ "点击查看视频")
@@ -68,6 +87,8 @@ services:
     image: ghcr.io/findmover/wxread:latest
     container_name: wxread
     restart: unless-stopped
+    volumes:
+      - ./state:/app/.state
 
     environment:
       TZ: "Asia/Shanghai"

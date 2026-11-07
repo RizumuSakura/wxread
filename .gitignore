@@ -10,3 +10,8 @@ logs/
 .env
 .env.local
 .env.*.local
+
+# Login state (encrypted, still keep it out of source control)
+.state/
+state/
+.test-deps/

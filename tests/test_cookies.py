@@ -1,0 +1,276 @@
+import contextlib
+import importlib
+import io
+import json
+import os
+import tempfile
+import time
+import unittest
+from email.message import Message
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+import requests
+from requests.adapters import BaseAdapter, HTTPAdapter
+from urllib3._collections import HTTPHeaderDict
+from urllib3.response import HTTPResponse
+
+import config
+import main
+from cookie_store import CookieStore
+from weread_session import RENEW_URL, WeReadSession
+
+
+INITIAL = {"wr_vid": "123456789", "wr_skey": "original-session", "wr_rt": "original-refresh-token-with-high-entropy"}
+
+
+class CookieAdapter(BaseAdapter):
+    """Real Requests CookieJar extraction with queued HTTP responses, no network."""
+    def __init__(self, replies):
+        self.replies = iter(replies)
+        self.requests = []
+
+    def send(self, request, **kwargs):
+        self.requests.append(request)
+        reply = next(self.replies)
+        if isinstance(reply, Exception):
+            raise reply
+        status, body, set_cookies = reply
+        headers = HTTPHeaderDict({"Content-Type": "application/json"})
+        message = Message()
+        for value in set_cookies:
+            headers.add("Set-Cookie", value)
+            message.add_header("Set-Cookie", value)
+        raw = HTTPResponse(
+            body=io.BytesIO(json.dumps(body).encode()), status=status, headers=headers,
+            original_response=SimpleNamespace(msg=message, isclosed=lambda: True, close=lambda: None),
+            preload_content=False,
+        )
+        return HTTPAdapter().build_response(request, raw)
+
+    def close(self):
+        pass
+
+
+class CurlTests(unittest.TestCase):
+    def test_cookie_header_without_spaces(self):
+        headers, cookies = config.convert("curl 'https://weread.qq.com/' -H 'Cookie: wr_vid=1;wr_skey=abc; wr_rt=a=b==' -H 'user-agent: browser'")
+        self.assertEqual(cookies, {"wr_vid": "1", "wr_skey": "abc", "wr_rt": "a=b=="})
+        self.assertNotIn("cookie", headers)
+        self.assertEqual(headers["user-agent"], "browser")
+
+    def test_double_quotes_and_long_options(self):
+        headers, cookies = config.convert('curl "https://weread.qq.com/" --header="accept: application/json" --cookie "wr_skey=complete-token;wr_rt=refresh"')
+        self.assertEqual(headers["accept"], "application/json")
+        self.assertEqual(cookies["wr_skey"], "complete-token")
+
+    def test_multiline_and_repeated_cookie_options(self):
+        command = "curl 'https://weread.qq.com/' \\\n -H 'cookie: wr_vid=1; wr_skey=old' \\\n -b 'wr_skey=new;wr_rt=refresh' --cookie='other=kept'"
+        _, cookies = config.convert(command)
+        self.assertEqual(cookies, {"wr_vid": "1", "wr_skey": "new", "wr_rt": "refresh", "other": "kept"})
+
+    def test_stale_transport_headers_are_removed(self):
+        headers, _ = config.convert("curl x -H 'Content-Length: 123' -H 'Host: stale' -b 'wr_skey=x'")
+        self.assertNotIn("content-length", headers)
+        self.assertNotIn("host", headers)
+
+    def test_missing_option_value_is_rejected(self):
+        with self.assertRaises(ValueError):
+            config.convert("curl x --cookie")
+
+
+class SessionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "cookies.enc"
+
+    def client(self, replies=(), initial=None):
+        client = WeReadSession({"Cookie": "stale", "Content-Length": "999"}, initial or INITIAL, self.path)
+        adapter = CookieAdapter(replies)
+        client.http.mount("https://weread.qq.com/", adapter)
+        self.addCleanup(client.close)
+        return client, adapter
+
+    def test_all_rotated_cookies_are_full_length_and_used_next_request(self):
+        client, adapter = self.client([
+            (200, {"succ": 1}, [
+                "wr_skey=complete-new-session-token; Domain=weread.qq.com; Path=/; Secure; HttpOnly",
+                "wr_rt=rotated-refresh-token; Domain=.weread.qq.com; Path=/; Secure",
+                "other=new-cookie; Domain=.weread.qq.com; Path=/",
+            ]),
+            (200, {"succ": 1}, []),
+        ])
+        self.assertTrue(client.renew())
+        client.post(main.READ_URL, {})
+        sent = adapter.requests[-1].headers["Cookie"]
+        self.assertIn("wr_skey=complete-new-session-token", sent)
+        self.assertIn("wr_rt=rotated-refresh-token", sent)
+        self.assertIn("other=new-cookie", sent)
+        self.assertEqual(sent.count("wr_skey="), 1)
+        self.assertNotIn("original-session", sent)
+        self.assertNotIn("original-refresh", sent)
+
+    def test_rotations_survive_a_new_actions_process_with_original_secret(self):
+        client, _ = self.client([(200, {"succ": 1}, ["wr_rt=rotated-refresh; Path=/", "wr_skey=long-new-session; Path=/"])])
+        client.renew()
+        restored, adapter = self.client([(200, {"succ": 1}, [])])
+        restored.post(main.READ_URL, {})
+        self.assertIn("wr_rt=rotated-refresh", adapter.requests[0].headers["Cookie"])
+        self.assertIn("wr_skey=long-new-session", adapter.requests[0].headers["Cookie"])
+
+    def test_read_responses_also_rotate_and_persist_cookies(self):
+        client, _ = self.client([(200, {"succ": 1, "synckey": 1}, ["wr_rt=read-rotated-refresh; Path=/"])])
+        client.post(main.READ_URL, {})
+        restored, _ = self.client()
+        self.assertEqual(restored.http.cookies.get("wr_rt"), "read-rotated-refresh")
+
+    def test_cookie_is_saved_even_when_read_response_is_an_error(self):
+        client, _ = self.client([(500, {"errCode": 500}, ["wr_rt=already-rotated; Path=/"])])
+        client.post(main.READ_URL, {})
+        self.assertEqual(CookieStore(INITIAL, self.path).load().get("wr_rt"), "already-rotated")
+
+    def test_network_failure_does_not_erase_saved_rotation(self):
+        client, _ = self.client([(200, {"succ": 1}, ["wr_rt=rotated; Path=/"]), requests.ConnectionError("offline")])
+        client.renew()
+        with self.assertRaises(requests.ConnectionError):
+            client.post(main.READ_URL, {})
+        self.assertEqual(CookieStore(INITIAL, self.path).load().get("wr_rt"), "rotated")
+
+    def test_changing_initial_secret_resets_state_and_namespace(self):
+        client, _ = self.client([(200, {"succ": 1}, ["wr_skey=old-account-state; Path=/"])])
+        client.renew()
+        updated = {**INITIAL, "wr_skey": "new-login-session", "wr_rt": "new-login-refresh"}
+        with self.assertLogs(level="WARNING"):
+            restored, _ = self.client(initial=updated)
+        self.assertNotEqual(restored.store.cache_id, client.store.cache_id)
+        self.assertEqual(restored.http.cookies.get("wr_skey"), "new-login-session")
+
+    def test_state_is_encrypted_and_retains_expiry(self):
+        client, _ = self.client([(200, {"succ": 1}, ["wr_rt=private-rotated-refresh; Path=/; Max-Age=2592000; Secure; HttpOnly"])])
+        client.renew()
+        encrypted = self.path.read_bytes()
+        self.assertNotIn(b"private-rotated-refresh", encrypted)
+        self.assertNotIn(b"original-session", encrypted)
+        restored = CookieStore(INITIAL, self.path).load()
+        cookie = next(cookie for cookie in restored if cookie.name == "wr_rt")
+        self.assertGreater(cookie.expires, time.time() + 2591900)
+        self.assertTrue(cookie.secure)
+        self.assertIn("HttpOnly", cookie._rest)
+
+    def test_corrupt_cache_falls_back_without_logging_contents(self):
+        self.path.write_bytes(b"invalid-cache-secret-contents")
+        with self.assertLogs(level="WARNING") as logs:
+            client, _ = self.client()
+        self.assertEqual(client.http.cookies.get("wr_skey"), INITIAL["wr_skey"])
+        self.assertNotIn("invalid-cache-secret-contents", "".join(logs.output))
+
+    def test_cookie_deletion_does_not_resurrect_seed_cookie(self):
+        for deletion in ("Max-Age=0", "Expires=Thu, 01 Jan 1970 00:00:00 GMT"):
+            with self.subTest(deletion=deletion):
+                self.path.unlink(missing_ok=True)
+                client, _ = self.client([(200, {"succ": 1}, [f"wr_rt=; Path=/; {deletion}"])])
+                client.renew()
+                self.assertIsNone(client.http.cookies.get("wr_rt"))
+                self.assertIsNone(CookieStore(INITIAL, self.path).load().get("wr_rt"))
+
+    def test_atomic_failure_keeps_previous_encrypted_state(self):
+        client, _ = self.client([(200, {"succ": 1}, [])])
+        client.renew()
+        original = self.path.read_bytes()
+        with patch("cookie_store.os.replace", side_effect=OSError("disk unavailable")):
+            with self.assertRaises(OSError):
+                client.store.save(client.http.cookies)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+
+    def test_success_without_new_skey_is_not_misreported_as_expired(self):
+        client, adapter = self.client([(200, {"succ": 1}, [])])
+        self.assertTrue(client.renew())
+        self.assertEqual(len(adapter.requests), 1)
+
+    def test_renewal_retries_are_bounded(self):
+        client, adapter = self.client([(200, {"errCode": -2012}, [])] * 3)
+        self.assertFalse(client.renew())
+        self.assertEqual(len(adapter.requests), 3)
+
+    def test_missing_initial_credentials_fails_before_network(self):
+        with self.assertRaisesRegex(RuntimeError, "WXREAD_CURL_BASH"):
+            WeReadSession({}, {"wr_vid": "1"}, self.path)
+
+    def test_github_logs_mask_new_credentials_without_masking_short_values(self):
+        output = io.StringIO()
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), contextlib.redirect_stdout(output):
+            client, _ = self.client([(200, {"succ": 1}, ["wr_skey=new-session-token; Path=/"])], {**INITIAL, "wr_gender": "0"})
+            client.renew()
+        self.assertIn("::add-mask::new-session-token", output.getvalue())
+        self.assertNotIn("::add-mask::0\n", output.getvalue())
+
+
+class ReadingTests(unittest.TestCase):
+    def response(self, body, status=200):
+        response = requests.Response()
+        response.status_code = status
+        response._content = json.dumps(body).encode()
+        return response
+
+    @patch("main.time.sleep")
+    def test_repeated_auth_failures_stop_instead_of_looping_forever(self, sleep):
+        client = Mock()
+        client.renew.return_value = True
+        client.post.return_value = self.response({"errCode": -2012})
+        with patch.object(main, "READ_NUM", 1), self.assertRaisesRegex(RuntimeError, "停止重试"):
+            main.run_reading(client, Mock())
+        self.assertEqual(client.post.call_count, main.AUTH_RETRY_LIMIT + 1)
+        self.assertEqual(client.renew.call_count, 1 + main.AUTH_RETRY_LIMIT)
+
+    def test_business_error_does_not_trigger_login_renewal(self):
+        client = Mock()
+        client.post.return_value = self.response({"errCode": -9999})
+        with patch.object(main, "READ_NUM", 1), self.assertRaisesRegex(RuntimeError, "errCode=-9999"):
+            main.run_reading(client, Mock())
+        self.assertEqual(client.renew.call_count, 1)  # startup only
+
+    @patch("main.time.sleep")
+    def test_startup_renewal_failure_can_still_use_valid_read_session(self, sleep):
+        client = Mock()
+        client.renew.return_value = False
+        client.post.return_value = self.response({"succ": 1, "synckey": 1})
+        with patch.object(main, "READ_NUM", 1):
+            self.assertEqual(main.run_reading(client, Mock()), 1)
+
+    def test_succ_zero_is_not_counted_as_success(self):
+        client = Mock()
+        client.post.return_value = self.response({"succ": 0})
+        with patch.object(main, "READ_NUM", 1), self.assertRaises(RuntimeError):
+            main.run_reading(client, Mock())
+
+    def test_importing_main_has_no_network_side_effect(self):
+        with patch("requests.Session.request", side_effect=AssertionError("unexpected request")):
+            importlib.reload(main)
+
+    def test_non_json_401_still_attempts_renewal(self):
+        client = Mock()
+        unauthorized = requests.Response()
+        unauthorized.status_code = 401
+        unauthorized._content = b"Unauthorized"
+        client.post.side_effect = [unauthorized, self.response({"succ": 1, "synckey": 1})]
+        with patch.object(main, "READ_NUM", 1), patch("main.time.sleep"):
+            self.assertEqual(main.run_reading(client, Mock()), 1)
+        self.assertEqual(client.renew.call_count, 2)
+
+    @patch("main.setup_logging", return_value=Mock())
+    @patch("main.push")
+    @patch("main.run_reading")
+    @patch("main.WeReadSession")
+    def test_auth_check_does_not_read_or_push(self, session, reading, push, logging):
+        session.return_value.renew.return_value = True
+        self.assertEqual(main.main(check_auth=True), 0)
+        reading.assert_not_called()
+        push.assert_not_called()
+        session.return_value.close.assert_called_once()
+
+
+if __name__ == "__main__":
+    unittest.main()

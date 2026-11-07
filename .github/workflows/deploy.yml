@@ -2,7 +2,7 @@ name: wxread
 
 concurrency:
   group: ${{ github.workflow }} # 使用工作流名称作为并发组的key
-  cancel-in-progress: true    # 取消任何正在进行的相同并发组的工作流
+  cancel-in-progress: false   # 续期可能轮换凭据，避免取消任务导致新 Cookie 未保存
 
 on:
   schedule:
@@ -15,11 +15,20 @@ on:
     # 晚间任务：北京时间每天 22:00（UTC 14:00）
     #- cron: '0 14 * * *'
   workflow_dispatch:  # 手动触发
+    inputs:
+      check_auth:
+        description: 仅验证 Cookie 续期（不阅读、不推送）
+        type: boolean
+        default: false
 
 jobs:
   deploy:
     runs-on: ubuntu-22.04
     environment: AutoRead  # 指定环境
+    permissions:
+      contents: read
+    env:
+      WXREAD_COOKIE_FILE: .state/cookies.enc
 
     steps:
 
@@ -39,7 +48,21 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install certifi==2024.8.30 charset-normalizer==3.4.0 idna==3.10 requests==2.32.3 urllib3==2.2.3
+        pip install -r requirements.txt
+
+    - name: Prepare encrypted Cookie cache
+      id: cookie-cache
+      env:
+        WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
+      run: python cookie_store.py
+
+    - name: Restore latest Cookie state
+      uses: actions/cache/restore@v6
+      with:
+        path: .state/cookies.enc
+        key: wxread-cookie-v1-${{ steps.cookie-cache.outputs.cache_id }}-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          wxread-cookie-v1-${{ steps.cookie-cache.outputs.cache_id }}-${{ github.ref_name }}-
 
     - name: Run deployment script
       env:
@@ -51,9 +74,23 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         SERVERCHAN_SPT:  ${{ secrets.SERVERCHAN_SPT }}
         READ_NUM: ${{ vars.READ_NUM }}  # 使用 Repository Variables
+        WXREAD_CHECK_AUTH: ${{ inputs.check_auth }}
 
       run: |
-        python main.py
+        if [ "$WXREAD_CHECK_AUTH" = "true" ]; then
+          python main.py --check-auth
+        else
+          python main.py
+        fi
+
+    # Save even if a later reading request fails: renewal may already have
+    # invalidated the previous refresh token. This file contains ciphertext only.
+    - name: Save updated Cookie state
+      if: ${{ always() && steps.cookie-cache.outcome == 'success' && hashFiles('.state/cookies.enc') != '' }}
+      uses: actions/cache/save@v6
+      with:
+        path: .state/cookies.enc
+        key: wxread-cookie-v1-${{ steps.cookie-cache.outputs.cache_id }}-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   keepalive-job:
     name: Keepalive Workflow
