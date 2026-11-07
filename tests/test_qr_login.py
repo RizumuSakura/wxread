@@ -12,7 +12,6 @@ from nacl.public import PrivateKey, SealedBox
 from github_login_secret import upload_login
 from login_store import current_login, load_login, save_login
 from cookie_store import CookieStore
-from official_skill import OfficialSkill
 from qr_login import QRLogin, create_qr, device_fingerprint
 
 
@@ -33,7 +32,7 @@ class LoginStoreTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "login.enc"
-        self.environment = patch.dict(os.environ, {"WXREAD_LOGIN_FILE": str(self.path), "WXREAD_LOGIN_JSON": "", "WEREAD_API_KEY": ""})
+        self.environment = patch.dict(os.environ, {"WXREAD_LOGIN_FILE": str(self.path), "WXREAD_LOGIN_JSON": ""})
         self.environment.start()
         self.addCleanup(self.environment.stop)
 
@@ -64,13 +63,6 @@ class LoginStoreTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             load_login()
         self.assertEqual(self.path.read_bytes(), original)
-
-    def test_official_skill_uses_saved_key_but_environment_key_has_priority(self):
-        save_login(LOGIN)
-        http = Mock()
-        self.assertEqual(OfficialSkill(session=http).auth.key, LOGIN["api_key"])
-        with patch.dict(os.environ, {"WEREAD_API_KEY": "wrk-explicit"}):
-            self.assertEqual(OfficialSkill(session=http).auth.key, "wrk-explicit")
 
     def test_fingerprint_is_generated_once_and_qr_is_a_png(self):
         fingerprint = device_fingerprint()
@@ -112,25 +104,28 @@ class QRProtocolTests(unittest.TestCase):
         self.http.get.side_effect = requests.ReadTimeout("waiting")
         self.assertEqual(self.client.poll("uid"), {"pending": True})
 
-    def test_complete_keeps_full_tokens_and_gets_api_key_without_creating_one(self):
-        self.http.get.side_effect = [reply({"name": "Test account", "vid": 123456789}), reply({"apikey": "wrk-test-key"})]
+    def test_complete_keeps_full_tokens_without_requesting_an_api_key(self):
+        self.http.get.return_value = reply({"name": "Test account", "vid": 123456789})
         login = self.client.complete({"succeed": True, "webLoginVid": 123456789, "accessToken": "complete-session-token", "refreshToken": "refresh/+="})
         self.assertEqual(login["cookies"]["wr_skey"], "complete-session-token")
         self.assertEqual(login["cookies"]["wr_rt"], "refresh%2F%2B%3D")
         self.assertEqual(login["cookies"]["wr_fp"], "1234567890")
-        self.assertEqual(login["api_key"], "wrk-test-key")
-        self.assertEqual(self.http.get.call_args.kwargs["params"], {"only_show": 1})
+        self.assertEqual(login["api_key"], "")
+        self.assertEqual(self.http.get.call_count, 1)
+        self.assertEqual(self.http.get.call_args.args[0], "https://weread.qq.com/api/userInfo")
+        self.assertEqual(self.http.get.call_args.kwargs["params"], {"userVid": "123456789"})
 
     def test_unconfirmed_login_never_fetches_account_credentials(self):
         with self.assertRaises(RuntimeError):
             self.client.complete({"succeed": False, "accessToken": "unconfirmed"})
         self.http.get.assert_not_called()
 
-    def test_web_login_can_be_saved_when_skill_has_not_been_enabled(self):
-        self.http.get.side_effect = [reply({"name": "Test account"}), reply({}, status=403)]
+    def test_web_login_only_requires_account_validation(self):
+        self.http.get.return_value = reply({"name": "Test account"})
         login = self.client.complete({"succeed": True, "webLoginVid": 123, "accessToken": "valid-session"})
         self.assertEqual(login["api_key"], "")
         self.assertEqual(login["cookies"]["wr_skey"], "valid-session")
+        self.assertEqual(self.http.get.call_count, 1)
 
     def test_wrong_account_response_is_rejected(self):
         self.http.get.return_value = reply({"name": "Other account", "vid": 999})
@@ -138,11 +133,12 @@ class QRProtocolTests(unittest.TestCase):
             self.client.complete({"succeed": True, "webLoginVid": 123, "accessToken": "valid-session"})
 
     def test_account_validation_retries_temporary_401_after_phone_confirmation(self):
-        self.http.get.side_effect = [reply({}, status=401), reply({"name": "Test account"}), reply({"apikey": "wrk-key"})]
+        self.http.get.side_effect = [reply({}, status=401), reply({"name": "Test account"})]
         with patch("qr_login.time.sleep"):
             login = self.client.complete({"succeed": True, "webLoginVid": 123, "accessToken": "valid-session"})
-        self.assertEqual(login["api_key"], "wrk-key")
-        self.assertEqual(self.http.get.call_count, 3)
+        self.assertEqual(login["cookies"]["wr_skey"], "valid-session")
+        self.assertEqual(login["api_key"], "")
+        self.assertEqual(self.http.get.call_count, 2)
 
 
 class GitHubSecretTests(unittest.TestCase):

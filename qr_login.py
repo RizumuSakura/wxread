@@ -111,14 +111,10 @@ class QRLogin:
         if (not isinstance(user.get("name"), str)
                 or str(user.get("vid", user.get("userVid", vid))) != vid):
             raise RuntimeError("无法验证扫码账号，未保存新的登录状态。")
-        try:
-            key = self._get_json("/api/skills/apikeyGet", {"only_show": 1}, headers=auth_headers).get("apikey", "")
-        except RuntimeError:
-            key = ""
         cookies = {cookie.name: cookie.value for cookie in self.http.cookies
                    if cookie.domain.lstrip(".") == "weread.qq.com" and not cookie.is_expired()}
         return {"version": 1, "cookies": cookies, "headers": {"user-agent": USER_AGENT, "referer": SKILLS_PAGE},
-                "api_key": key if isinstance(key, str) else ""}
+                "api_key": ""}  # Preserve the existing login-file schema, without retrieving an API key.
 
     def close(self):
         self.http.close()
@@ -168,8 +164,6 @@ def main(argv=None):
                     login = client.complete(result)
                     save_login(login)
                     print("登录成功；凭据已加密保存。", flush=True)
-                    if not login["api_key"]:
-                        print("本次未取得官方 API Key；网页登录已保存，官方查询可另设 WEREAD_API_KEY。", flush=True)
                     break
                 code = result.get("logicCode", "")
                 if code in ("NEED_OTP", "OTP_NOT_MATCH"):

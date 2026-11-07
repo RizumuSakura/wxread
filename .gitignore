@@ -15,3 +15,4 @@ logs/
 .state/
 state/
 .test-deps/
+.venv/

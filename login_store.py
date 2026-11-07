@@ -47,6 +47,7 @@ def validate_login(value):
         raise RuntimeError("登录请求头格式无效。")
     headers = {k.lower(): v for k, v in headers.items()
                if k.lower() in {"user-agent", "accept", "accept-language", "referer", "origin"}}
+    # Read legacy login files/secrets unchanged; no feature retrieves or uses this metadata now.
     api_key = value.get("api_key", "")
     if not isinstance(api_key, str):
         raise RuntimeError("官方 API Key 格式无效。")

@@ -3,5 +3,6 @@
 state
 .env*
 .test-deps
+.venv
 __pycache__
 *.pyc
