@@ -1,6 +1,7 @@
 # config.py 自定义配置,包括阅读次数、推送token的填写
 import os
 import shlex
+from login_store import load_login
 
 """
 可修改区域
@@ -122,4 +123,12 @@ def convert(curl_command):
     return parsed_headers, parsed_cookies
 
 
-headers, cookies = convert(curl_str) if curl_str else (headers, cookies)
+if os.getenv('WXREAD_LOGIN_JSON'):
+    login = load_login()
+    headers, cookies = login['headers'], login['cookies']
+elif curl_str:
+    headers, cookies = convert(curl_str)
+else:
+    login = load_login()
+    if login is not None:
+        headers, cookies = login['headers'], login['cookies']

@@ -79,7 +79,7 @@ class OfficialSkillTests(unittest.TestCase):
         self.assertNotIn("Cookie", request.headers)
 
     def test_missing_api_key_fails_before_network(self):
-        with patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(RuntimeError, "WEREAD_API_KEY"):
+        with patch.dict(os.environ, {}, clear=True), patch("official_skill.load_login", return_value=None), self.assertRaisesRegex(RuntimeError, "WEREAD_API_KEY"):
             OfficialSkill(session=self.session)
         self.session.post.assert_not_called()
 

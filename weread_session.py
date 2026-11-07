@@ -25,7 +25,7 @@ COOKIE_DATA_VARIANTS = (
 class WeReadSession:
     def __init__(self, headers, cookies, cookie_file=None):
         if not cookies.get("wr_vid") or not cookies.get("wr_skey"):
-            raise RuntimeError("缺少登录 Cookie，请更新 WXREAD_CURL_BASH（完整的 read 请求）。")
+            raise RuntimeError("缺少登录 Cookie，请运行 python qr_login.py 扫码，或更新 WXREAD_CURL_BASH。")
         self.http = requests.Session()
         # A copied Content-Length or Cookie header would override the current data/jar.
         self.http.headers.update({
@@ -42,7 +42,7 @@ class WeReadSession:
                 self.http.cookies.set(name, value, domain=".weread.qq.com", path="/", secure=True)
         self._mask_cookies()
         if not any(cookie.name == "wr_rt" for cookie in self.http.cookies):
-            logging.warning("Cookie 缺少 wr_rt，长期续期可能失败；请复制包含全部 Cookie 的 read 请求。")
+            logging.warning("Cookie 缺少 wr_rt，长期续期可能失败；可运行 python qr_login.py 重新登录。")
 
     def _mask_cookies(self):
         if os.getenv("GITHUB_ACTIONS") == "true":

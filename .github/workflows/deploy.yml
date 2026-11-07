@@ -53,6 +53,7 @@ jobs:
     - name: Prepare encrypted Cookie cache
       id: cookie-cache
       env:
+        WXREAD_LOGIN_JSON: ${{ secrets.WXREAD_LOGIN_JSON }}
         WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
       run: python cookie_store.py
 
@@ -66,6 +67,7 @@ jobs:
 
     - name: Run deployment script
       env:
+        WXREAD_LOGIN_JSON: ${{ secrets.WXREAD_LOGIN_JSON }}
         WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
         PUSH_METHOD: ${{ secrets.PUSH_METHOD }}
         PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}

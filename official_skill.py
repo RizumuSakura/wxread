@@ -10,6 +10,7 @@ from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
 import requests
+from login_store import load_login
 
 
 GATEWAY = "https://i.weread.qq.com/api/agent/gateway"
@@ -91,6 +92,9 @@ class _BearerAuth(requests.auth.AuthBase):
 class OfficialSkill:
     def __init__(self, key=None, session=None):
         key = key or os.getenv("WEREAD_API_KEY")
+        if not key:
+            login = load_login()
+            key = login.get("api_key") if login else None
         if not key or not key.strip():
             raise RuntimeError("缺少 WEREAD_API_KEY，请在受保护的环境变量中配置微信读书官方 API Key。")
         self.session = session or requests.Session()

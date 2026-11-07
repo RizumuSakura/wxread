@@ -1,204 +1,204 @@
-# 更新第三版，提高读书稳定程度，最大限量保持cookie有效时间，欢迎fork！
+# wxread
 
-## 项目介绍 📚
+微信读书扫码登录、会话续期与官方阅读数据查询工具，支持本地、Docker 和 GitHub Actions。
 
-这个脚本主要是为了在微信读书的阅读**挑战赛中刷时长**和**保持天数**。由于本人偶尔看书时未能及时签到，导致入场费打了水漂。网上找了一些，发现高赞的自动阅读需要挂阅读器模拟或者用ADB模拟，实现一点也不优雅。因此，我决定编写一个自动化脚本。通过对官网接口的抓包和JS逆向分析实现。
+首次用微信扫码确认，之后复用加密保存的登录状态，无需手动抓包或复制 cURL。原有脚本入口保留，但脚本执行次数和接口返回成功不等同于服务端认可的阅读时长。
 
-该脚本具备以下功能：
+## 功能
 
-- **阅读时长调节**：默认计入排行榜和挑战赛，时长可调节，默认为60分钟。
-- **定时运行推送**：可部署在GitHub Action/服务器上，支持每天定时运行并推送结果到微信。
-- **Cookie自动更新**：在服务端允许续期时自动更新 Cookie，减少手动重新登录。
-- **续期状态持久化**：自动接收所有接口返回的完整 Cookie（包括 `wr_skey`、`wr_rt`），加密保存后供下一次任务使用。
-- **轻量化设计**：本脚本实现了轻量化的编写，部署服务器/GIthub action后到点运行，无需额外硬件。
+| 功能 | 当前支持情况 |
+| --- | --- |
+| 微信扫码登录 | 本地生成二维码，支持手机确认和四位验证码 |
+| 登录状态保存 | Cookie 与可取得的官方 API Key 加密保存在本机 |
+| GitHub Actions 登录配置 | 可将登录状态加密同步为 Repository 或 Environment Secret |
+| Cookie 续期 | 保留完整 Cookie，跨任务恢复；续期失败时保留原状态 |
+| 指定书籍查询 | 输入阅读器链接或数字 bookId，查询书籍信息和个人进度 |
+| 官方阅读统计 | 查询周、月、年或累计数据，按官方字段单位显示 |
+| 结果通知 | 原脚本支持 PushPlus、WxPusher、Telegram、ServerChan |
 
-***
-## 操作步骤 🛠️
+## 快速开始
 
-### 抓包准备
-
-脚本逻辑还是比较简单的，`main.py`与`push.py`代码不需要改动。在微信阅读官网 [微信读书](https://weread.qq.com/) 搜索【三体】点开阅读点击下一页进行抓包，抓到`read`接口 `https://weread.qq.com/web/book/read`，如果返回格式正常（如：
-
-```json
-{
-  "succ": 1,
-  "synckey": 564589834
-}
-```
-右键复制为Bash格式。
-
-### 方法一： GitHub Action部署运行（GitHub运行）
-
-
-- Fork这个仓库后，先打开 fork 的 **Actions** 页面，启用 `wxread` workflow；公开仓库 fork 后，定时 workflow 默认不会自动启用。
-- 在仓库 **Settings** -> 左侧列表中的 **Secrets and variables** -> **Actions**，然后在右侧的 **Repository secrets** 中添加如下值：
-  - `WXREAD_CURL_BASH`：上面抓read接口后转换为curl_bash的数据。
-  - `PUSH_METHOD`：推送方法，4选1推送方式（pushplus、wxpusher、telegram、serverChan）。
-  - `PUSHPLUS_TOKEN` or `WXPUSHER_SPT` or `TELEGRAM_BOT_TOKEN`&`TELEGRAM_CHAT_ID` or `SERVERCHAN_SPT`: 选择推送后填写对应token。
-  
-- 在 **Variables** 部分，最下方添加变量：
-  - `READ_NUM`：设定每次阅读的目标次数。
-
-
-- 基本释义：
-
-| key                        | Value                               | 说明                                                         | 属性      |
-| ------------------------- | ---------------------------------- | ------------------------------------------------------------ | --------- |
-| `WXREAD_CURL_BASH`         | `read` 接口 `curl_bash`数据 | **必填**，必须提供有效指令                                   | secrets   |
-| `READ_NUM`                 | 阅读次数（每次 30 秒）              | **可选**，阅读时长，默认 20 分钟                           | variables |
-| `PUSH_METHOD`              | `pushplus`/`wxpusher`/`telegram`/`serverchan`    | **可选**，推送方式，4选1，默认不推送                                       |    secrets     |
-| `PUSHPLUS_TOKEN`           | PushPlus 的 token                   | 当 `PUSH_METHOD=pushplus` 时必填，[获取地址](https://www.pushplus.plus/uc.html) | secrets   |
-| `WXPUSHER_SPT`             | WxPusher 的token                    | 当 `PUSH_METHOD=wxpusher` 时必填，[获取地址](https://wxpusher.zjiecode.com/docs/#/?id=获取spt) | secrets   |
-| `TELEGRAM_BOT_TOKEN`  <br>`TELEGRAM_CHAT_ID`   <br>`http_proxy`/`https_proxy`（可选）| 群组id以及机器人token                 | 当 `PUSH_METHOD=telegram` 时必填，[配置文档](https://www.nodeseek.com/post-22475-1) | secrets   |
-| `SERVERCHAN_SPT`          | serverchan 的 SendKey               | 当 `PUSH_METHOD=serverchan` 时必填，[获取地址](https://sct.ftqq.com/sendkey) | secrets   |
-
-**重要：除了READ_NUM配置在varables，其它的都配置在secrets里面的；需要推送`PUSH_METHOD`是必填的。**
-
-### Cookie 续期与失效处理
-
-关于官方 Skill、参考 KOReader 项目的登录方式，以及当前书籍选择逻辑的限制，见[认证与书籍选择核查](docs/session-research.md)。
-
-旧版每次 Actions 都从最初的 Secret 开始，只在内存中修改截断后的 `wr_skey`，未保存其余轮换 Cookie。因此即使日志显示刷新成功，后续任务也可能继续使用几周前的登录凭据。
-
-新版使用统一的 HTTP Session，保留完整 Cookie 值及过期时间。续期响应必须明确成功后才会提交新 Cookie；失败或无法确认时回滚内存并保留原加密文件。其他接口的 Cookie 更新仍在收到响应后及时保存。Actions 会在执行前恢复最新状态，并在任务失败时也尝试保存已经更新的状态；不需要新增 PAT 或授予 Secrets 写入权限。日志不会输出 Cookie 值。
-
-启用方法：
-
-1. 更新代码和 `.github/workflows/deploy.yml`，保留每天运行的定时任务。
-2. 如果原 Cookie 已经失效，请在微信读书网页版重新登录，复制完整 `read` 请求的 **cURL (bash)**，更新 `WXREAD_CURL_BASH`。应包含 `wr_vid`、`wr_skey`，以及用于长期续期的 `wr_rt`（若网页下发）。仓库或 `AutoRead` 环境中若存在同名 Secret，要更新工作流实际使用的那一个。
-3. 手动运行一次 `wxread` 工作流，可勾选“仅验证 Cookie 续期”进行快速检查（不阅读、不推送）。正常日志会显示“完整 Cookie 已加密保存”；第二次运行应显示“已恢复上次运行保存的 Cookie”。首次运行没有缓存是正常的。
-
-缓存中只有 Fernet 加密后的 `.state/cookies.enc`。加密密钥从初始 Cookie Secret 派生，缓存标识使用独立的单向摘要；更换初始 Cookie 会自动隔离旧缓存并重新初始化。不要上传原始 Cookie 文件或把 Cookie 提交到仓库。
-
-续期只能维护服务器仍允许续期的会话；强制退出、撤销授权、刷新凭据到期或服务器拒绝续期时，仍需重新登录更新 Secret，无法保证永久有效。若任务长时间停用、缓存被清理或定时任务未执行，也可能需要重新初始化。连续鉴权失败会有限重试后停止并通过已配置渠道通知，不再无限循环刷新。
-
-本地运行请先执行 `python -m pip install -r requirements.txt`。状态文件默认是 `.state/cookies.enc`，可用 `WXREAD_COOKIE_FILE` 指定路径；Docker Compose 已将该目录挂载到宿主机 `./state`。
-
-### 官方 Skill：按书籍查询真实进度和统计
-
-新增独立命令 `official_skill.py`，使用腾讯官方 Skill `1.0.5` 的 API Key 查询书籍信息、个人进度和阅读统计。它不会提交阅读记录，也不会把脚本等待时间当作服务端计时。
-
-公开元数据查询无需登录，例如下面的链接对应《被讨厌的勇气》，实际 `bookId` 为 `25615385`：
+需要 Python 3.10 或以上。Windows 可以用 `py -3` 替代下面的 `python`。
 
 ```bash
+git clone https://github.com/RizumuSakura/wxread.git
+cd wxread
+python -m pip install -r requirements.txt
+python qr_login.py
+```
+
+程序会生成并打开二维码图片。用微信扫码，在手机确认登录；若手机显示四位验证码，在终端输入即可。验证码输入不会回显。
+
+成功后，凭据保存在项目的 `.state/login.enc`，解密密钥为同目录的 `login.key`。目录已被 Git 和 Docker 构建上下文忽略；请将这两个文件留在自己控制的机器上。
+
+登录不会自动开通官方 Skill。若账号已经开通，程序会尝试读取已有 API Key；未取得 Key 时，网页登录仍会保存，官方查询可另行配置。
+
+不希望自动打开图片，或通过 SSH 使用时：
+
+```bash
+python qr_login.py --no-open
+```
+
+打开程序输出的本地 `login-qr.png` 扫码。二维码和等待时间有限，过期后重新执行命令；未完成的扫码不会替换原登录状态。
+
+## 查询指定书籍
+
+官方查询使用独立的 API Key，不需要网页 Cookie。可在[微信读书官方 Skill 页面](https://weread.qq.com/r/weread-skills)开通并获取 Key，通过受保护的 `WEREAD_API_KEY` 环境变量提供；扫码已保存 Key 时也可直接使用。
+
+例如，《被讨厌的勇气：“自我启发之父”阿德勒的哲学课》对应 `bookId=25615385`：
+
+```bash
+# 只查询公开元数据，无需登录
 python official_skill.py book "https://weread.qq.com/web/reader/8b9329607186dc198b9bdab" --metadata-only
-```
 
-查询自己的累计时长，需要先在受保护的环境变量中配置 `WEREAD_API_KEY`，可在[官方 Skill 页面](https://weread.qq.com/r/weread-skills)获取。此命令不读取网页 Cookie，也不复用 `WXREAD_CURL_BASH`。
-
-```bash
+# 查询自己的进度和接口返回的累计时长
 python official_skill.py book 25615385
+
+# 链接也可以直接用于个人进度查询
+python official_skill.py book "https://weread.qq.com/web/reader/8b9329607186dc198b9bdab"
+
+# 查询本月统计；也支持 weekly、annually、overall
 python official_skill.py stats --mode monthly
-# --json 可导出带明确单位的查询结果
+
+# 导出带明确单位的 JSON
 python official_skill.py book 25615385 --json
 ```
 
-`progress=1` 表示 `1%`；时长以服务端返回的秒数换算显示，缺失数据标为“未返回”。需要核对真实阅读是否同步时，可在阅读前后各查询一次。官方查询并不证明时长会计入某项排行榜或挑战赛，API Key 的长期有效性也仍由服务端决定。
+`progress=1` 显示为 `1%`。时长按照官方说明从秒换算显示，缺失数据标为“未返回”，不会当成零。对真实阅读做前后查询，可核对服务端记录的变化；普通统计不能替代某项排行榜或挑战赛的计时结果。
 
-### 视频教程
+当前接入的官方 Skill 版本为 `1.0.5`。接口要求升级时程序会停止查询，先核对[官方文档](https://github.com/Tencent/WeChatReading/blob/main/skills/SKILL.md)再更新版本。
 
-[![视频教程](https://github.com/user-attachments/assets/ec144869-3dbb-40fe-9bc5-f8bf1b5fce3c)](https://www.bilibili.com/video/BV1kJ6gY3En3/ "点击查看视频")
+## GitHub Actions
 
+工作流使用 `.github/workflows/deploy.yml`，默认每天北京时间 **01:07** 运行，也支持手动触发。
 
-### 方法二： 服务器运行（docker部署）
+### 1. 同步扫码登录状态
 
-**步骤1：** 创建 docker-compose.yml 文件
-
-```yaml
-services:
-  wxread:
-    image: ghcr.io/findmover/wxread:latest
-    container_name: wxread
-    restart: unless-stopped
-    volumes:
-      - ./state:/app/.state
-
-    environment:
-      TZ: "Asia/Shanghai"
-      
-      # 阅读次数（每次 30 秒），默认40为20分钟
-      READ_NUM: 40
-      
-      # 微信读书 curl bash 命令（必需）
-      # 使用 | 表示多行字符串，下一行开始粘贴完整的 curl 命令
-      WXREAD_CURL_BASH: |
-        curl 'https://weread.qq.com/web/book/read' \
-        -H 'accept: application/json, text/plain, */*' \
-        .....
-      
-      # 定时任务时间（Cron 表达式）
-      CRON_SCHEDULE: "0 1 * * *"
-      
-      # 可选配置：推送方式 (pushplus/wxpusher/telegram/serverchan)
-      PUSH_METHOD: ""
-      # PushPlus 推送配置
-      PUSHPLUS_TOKEN: ""
-      # Telegram 推送配置
-      TELEGRAM_BOT_TOKEN: ""
-      TELEGRAM_CHAT_ID: ""
-      # WxPusher 推送配置
-      WXPUSHER_SPT: ""
-      # ServerChan 推送配置
-      SERVERCHAN_SPT: ""
-```
-
-**Cron 定时任务配置：**
-- `0 1 * * *` - 每天凌晨1点（默认）
-- `0 */6 * * *` - 每6小时
-- `30 8 * * *` - 每天早上8:30
-
-**步骤2：** 启动容器
+在能扫码的本机运行以下命令，将仓库名替换成自己的地址：
 
 ```bash
-docker-compose up -d
+python qr_login.py --github-repo YOUR_NAME/wxread --github-environment AutoRead
 ```
 
-**步骤3：** 查看日志和测试
+程序在扫码成功后，通过 GitHub 公钥加密凭据，写入该仓库 `AutoRead` 环境的 `WXREAD_LOGIN_JSON` Secret。上传使用当前 Git 的 GitHub 登录凭据，或环境变量中的 `GH_TOKEN` / `GITHUB_TOKEN`；凭据必须有目标环境 Secrets 的写入权限。无需把 GitHub Token 填进源码，也无需让 Actions 写回 Secrets。
+
+如果扫码已完成，只想再次同步：
 
 ```bash
-# 查看日志
-docker-compose logs -f
-
-# 测试运行
-docker-compose exec wxread python /app/main.py
+python qr_login.py --sync-only --github-repo YOUR_NAME/wxread --github-environment AutoRead
 ```
 
-**Docker 说明：**
-- 镜像地址：`ghcr.io/findmover/wxread:latest`
-- 支持多架构：linux/amd64 和 linux/arm64
-- 推送代码到仓库会自动构建最新镜像
+不使用 Environment Secret 时，省略 `--github-environment AutoRead`，将写入 Repository Secret。工作流可读取仓库级 Secret；若环境里存在同名项，以环境配置为准。
 
-***
-## Attention 📢
+同步失败不会删除本地登录状态。可以处理 GitHub 登录或权限问题后，用 `--sync-only` 重试；同步时会读取已经续期过的最新 Cookie。
 
-1. **签到次数调整**：只需签到完成挑战赛可以将`num`次数从120调整为2，每次`num`为30秒，200即100分钟。
-   
-2. **解决阅读时间问题**：对于issue中提出的“阅读时间没有增加”，“增加时间与刷的时间不对等”建议保留`config.py`中的【data】字段，默认阅读三体，其它书籍自行测试。
+### 2. 启用并检查工作流
 
-3. **GitHub Action部署/本地部署**：主要配置config.py即可，Action部署使用环境变量，本地部署修改config.py里的阅读次数、headers、cookies即可。
+1. 确认修复代码和工作流文件已经进入默认分支。
+2. 打开仓库 **Actions**，启用 `wxread` 工作流；Fork 后可能需要手动启用。
+3. 点击 **Run workflow**，勾选“仅验证 Cookie 续期”。此模式不执行原阅读脚本，也不推送消息。
+4. 第一次成功后，再执行一次检查。日志应显示“已恢复上次运行保存的 Cookie”。
 
-4. **推送**：pushplus推送偶尔出问题，猜测是GitHub action环境问题，增加重试机制。并增加wxpusher的极简推送方式。
+若 GitHub 拒绝启动工作流，先处理其页面或 API 返回的具体限制；本地测试通过不代表 Actions 已经运行。
 
+### 3. 可选配置
 
-***
-## 字段解释 🔍
+Repository Variables：
 
-| 字段 | 示例值 | 解释 |
+| 名称 | 默认值 | 说明 |
 | --- | --- | --- |
-| `appId` | `"wbxxxxxxxxxxxxxxxxxxxxxxxx"` | 应用的唯一标识符。 |
-| `b` | `"ce032b305a9bc1ce0b0dd2a"` | 书籍或章节的唯一标识符。 |
-| `c` | `"0723244023c072b030ba601"` | 内容的唯一标识符，可能是页面或具体段落。 |
-| `ci` | `60` | 章节或部分的索引。 |
-| `co` | `336` | 内容的具体位置或页码。 |
-| `sm` | `"[插图]威慑纪元61年，执剑人在一棵巨树"` | 当前阅读的内容描述或摘要。 |
-| `pr` | `65` | 页码或段落索引。 |
-| `rt` | `88` | 阅读时长或阅读进度。 |
-| `ts` | `1727580815581` | 时间戳，表示请求发送的具体时间（毫秒级）。 |
-| `rn` | `114` | 随机数或请求编号，用于标识唯一的请求。 |
-| `sg` | `"bfdf7de2fe1673546ca079e2f02b79b937901ef789ed5ae16e7b43fb9e22e724"` | 安全签名，用于验证请求的合法性和完整性。 |
-| `ct` | `1727580815` | 时间戳，表示请求发送的具体时间（秒级）。 |
-| `ps` | `"xxxxxxxxxxxxxxxxxxxxxxxx"` | 用户标识符或会话标识符，用于追踪用户或会话。 |
-| `pc` | `"xxxxxxxxxxxxxxxxxxxxxxxx"` | 设备标识符或客户端标识符，用于标识用户的设备或客户端。 |
-| `s` | `"fadcb9de"` | 校验和或哈希值，用于验证请求数据的完整性。 |
+| `READ_NUM` | `40` | 原脚本请求次数，正整数；每次成功后的等待约 30 秒 |
 
+Repository / `AutoRead` Environment Secrets：
 
+| 名称 | 说明 |
+| --- | --- |
+| `WXREAD_LOGIN_JSON` | 推荐，由扫码工具生成并同步 |
+| `WXREAD_CURL_BASH` | 兼容旧版配置；已使用扫码 Secret 时无需再抓包 |
+| `PUSH_METHOD` | 留空不推送，或填写 `pushplus`、`wxpusher`、`telegram`、`serverchan` |
+| `PUSHPLUS_TOKEN` | PushPlus 使用 |
+| `WXPUSHER_SPT` | WxPusher 使用 |
+| `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` | Telegram 使用 |
+| `SERVERCHAN_SPT` | ServerChan 使用 |
+
+Python 脚本本身不会自动读取 `.env` 文件。`.env.example` 是配置参考，请由终端或部署平台传入环境变量；Docker Compose 也可通过其 `.env` 插值机制传入。
+
+## 本地与 Docker
+
+检查本地登录能否续期：
+
+```bash
+python main.py --check-auth
+```
+
+运行原脚本：
+
+```bash
+python main.py
+```
+
+Docker 首次建议在宿主机完成扫码，再将登录状态目录挂载进容器。现有 `docker-compose.yml` 将宿主机 `./state` 挂载为容器 `/app/.state`；因此可以这样初始化：
+
+```bash
+# Linux / macOS：首次扫码写入 Compose 将挂载的目录
+WXREAD_LOGIN_FILE=./state/login.enc python qr_login.py
+
+```
+
+PowerShell 首次扫码可用：
+
+```powershell
+$env:WXREAD_LOGIN_FILE = ".\state\login.enc"
+python qr_login.py
+```
+
+Compose 默认从当前源码构建镜像，不再包含必须手动填写的 cURL 占位内容。初始化登录后启动：
+
+```bash
+docker compose up -d --build
+docker compose logs -f
+docker compose exec wxread python main.py --check-auth
+```
+
+`CRON_SCHEDULE` 是容器调度规则，默认 `0 1 * * *`；`TZ` 默认 `Asia/Shanghai`。它们不控制 GitHub Actions 的运行时间。
+
+## 登录状态如何维护
+
+- 所有网页请求共用 Session，接收完整 Cookie，保留过期时间，避免新旧同名凭据冲突。
+- 续期响应明确成功后才提交新状态；失败、非预期响应或中断不会覆盖已保存的可用登录。
+- Actions 在运行前恢复加密的 `.state/cookies.enc`，后续任务失败时也会尝试保存已确认的 Cookie 更新。
+- 登录输入变化会隔离旧缓存。服务端强制注销、授权撤销或不再允许续期时，重新扫码并同步 Secret。
+
+登录来源优先级：`WXREAD_LOGIN_JSON` → `WXREAD_CURL_BASH` → 本地扫码状态。显式的 `WEREAD_API_KEY` 优先于扫码保存的 API Key。
+
+可用 `WXREAD_LOGIN_FILE` 指定本地扫码状态位置，用 `WXREAD_COOKIE_FILE` 指定续期缓存位置。默认文件如下：
+
+| 文件 | 用途 |
+| --- | --- |
+| `.state/login.enc` | 加密的初始登录状态 |
+| `.state/login.key` | 本机登录状态解密密钥 |
+| `.state/device.json` | 该安装实例的设备标识 |
+| `.state/cookies.enc` | 后续请求更新后的 Cookie 状态 |
+
+源码和现有测试都不能证明 Cookie 或官方 API Key 永久有效。长期停用、缓存清理或重新授权后，可能需要再扫码一次。
+
+## 当前边界
+
+指定书籍的**官方查询**已支持。`main.py` 仍保留原项目的固定阅读模板和随机书籍、章节逻辑，尚未改造成根据链接维护同一本书真实位置的阅读客户端。
+
+官方 Skill 的公开文档没有提供上传阅读时长的能力。本项目不把请求次数、等待时长或成功响应作为实际阅读效果的证明。认证方式与参考插件的研究见 [docs/session-research.md](docs/session-research.md)。
+
+## 开发与验证
+
+```bash
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+```
+
+测试覆盖扫码授权状态、凭据加密、GitHub Secret 加密上传、Cookie 轮换与回滚、书籍链接解析、官方鉴权和统计单位。自动化测试使用替身账号和响应，不提交真实阅读时长。
+
+## 参考
+
+- [微信读书官方 Skill](https://github.com/Tencent/WeChatReading)
+- [微信读书 Skill 入口](https://weread.qq.com/r/weread-skills)
+- [finlater/weread.koplugin](https://github.com/finlater/weread.koplugin)：扫码协议、会话维护方式的参考项目，非腾讯官方插件

@@ -21,7 +21,7 @@ SYNCKEY_REPAIR_LIMIT = 3
 SYNCKEY_REPAIR_DELAY = 5
 AUTH_ERROR_CODES = {"-2012", "-2013"}
 AUTH_RETRY_LIMIT = 2
-LOGIN_HELP = "请在微信读书网页版重新登录，并更新 GitHub Secret WXREAD_CURL_BASH（包含全部 Cookie 的 read 请求）。"
+LOGIN_HELP = "请运行 python qr_login.py 重新扫码；Actions 用户同步 WXREAD_LOGIN_JSON，旧配置也可更新 WXREAD_CURL_BASH。"
 
 
 def encode_data(payload):

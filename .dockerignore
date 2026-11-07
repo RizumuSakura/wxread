@@ -1,0 +1,7 @@
+.git
+.state
+state
+.env*
+.test-deps
+__pycache__
+*.pyc
