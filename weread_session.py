@@ -25,7 +25,7 @@ COOKIE_DATA_VARIANTS = (
 class WeReadSession:
     def __init__(self, headers, cookies, cookie_file=None):
         if not cookies.get("wr_vid") or not cookies.get("wr_skey"):
-            raise RuntimeError("缺少登录 Cookie，请运行 python qr_login.py 扫码，或更新 WXREAD_CURL_BASH。")
+            raise RuntimeError("缺少登录 Cookie，请在 GitHub Actions 运行“扫码登录”，或检查旧 WXREAD_CURL_BASH 配置。")
         self.http = requests.Session()
         # A copied Content-Length or Cookie header would override the current data/jar.
         self.http.headers.update({
@@ -42,7 +42,7 @@ class WeReadSession:
                 self.http.cookies.set(name, value, domain=".weread.qq.com", path="/", secure=True)
         self._mask_cookies()
         if not any(cookie.name == "wr_rt" for cookie in self.http.cookies):
-            logging.warning("Cookie 缺少 wr_rt，长期续期可能失败；可运行 python qr_login.py 重新登录。")
+            logging.warning("Cookie 缺少 wr_rt，长期续期可能失败；请在 GitHub Actions 运行“扫码登录”。")
 
     def _mask_cookies(self):
         if os.getenv("GITHUB_ACTIONS") == "true":
@@ -103,7 +103,7 @@ class WeReadSession:
 
     def post(self, url, payload, persist_cookies=True):
         try:
-            response = self.http.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+            response = self.http.post(url, json=payload, timeout=REQUEST_TIMEOUT, allow_redirects=False)
         except requests.RequestException:
             # A redirect can rotate a Cookie before a subsequent connection fails.
             if persist_cookies:
@@ -112,6 +112,16 @@ class WeReadSession:
         self._merge_response_cookies(response)
         if persist_cookies:
             self._persist()
+        return response
+
+    def get(self, url):
+        try:
+            response = self.http.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=False)
+        except requests.RequestException:
+            self._persist()
+            raise
+        self._merge_response_cookies(response)
+        self._persist()
         return response
 
     def renew(self):

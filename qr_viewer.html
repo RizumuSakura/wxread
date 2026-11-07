@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>微信读书 · 云端扫码登录</title>
+<style>
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:#f4f7fb;color:#14243b;font:16px/1.7 system-ui,sans-serif;padding:32px 18px}main{max-width:540px;margin:auto;background:white;border:1px solid #dbe4ef;border-radius:20px;padding:30px;box-shadow:0 12px 40px #152e5010}h1{font-size:25px;line-height:1.4;margin:0 0 12px}p{margin:10px 0}.muted{color:#5d6d80;font-size:14px}label{display:block;margin:20px 0 8px;font-weight:600}input,button{width:100%;font:inherit;border-radius:9px;padding:11px 13px}input{border:1px solid #b7c6d9}button{background:#166cdb;border:0;color:white;cursor:pointer;margin-top:12px;font-weight:600}button:disabled{opacity:.6}#status{min-height:28px;color:#9c341d}img{display:block;max-width:100%;width:330px;height:auto;margin:16px auto;image-rendering:pixelated}code{font-size:13px;word-break:break-all}footer{margin-top:20px;border-top:1px solid #e3e9f1;padding-top:14px}
+</style>
+<main>
+<h1>微信读书 · 云端扫码登录</h1>
+<p class="muted">此网页只在浏览器内解密二维码，不上传口令，不连接任何服务器。扫码后的账号校验与登录保存由 GitHub Actions 完成。</p>
+<p id="run" class="muted"></p>
+<label for="password">二维码查看口令</label>
+<input id="password" type="password" autocomplete="off" placeholder="输入 WXREAD_QR_PASSWORD 对应的口令">
+<button id="show" type="button">解密并显示二维码</button>
+<p id="status" role="status" aria-live="polite"></p>
+<img id="qr" alt="请用微信扫描此登录二维码" hidden>
+<p id="remaining" class="muted"></p>
+<footer class="muted">用微信扫码并在手机确认后，回到工作流查看结果。如果要求四位验证码，请按 README 的续接流程操作，不要把验证码填到公开的工作流输入。二维码过期后需重新触发工作流。</footer>
+</main>
+<script>
+const envelope = __QR_ENVELOPE__;
+const metadata = __QR_METADATA__;
+const byId = id => document.getElementById(id);
+const decode = value => Uint8Array.from(atob(value), c => c.charCodeAt(0));
+byId('run').textContent = '仓库 ' + metadata.repository + ' · 运行 #' + metadata.run_id;
+let imageURL;
+function remaining(){const seconds=Math.max(0,Math.ceil((metadata.expires_at*1000-Date.now())/1000));byId('remaining').textContent=seconds?'本次二维码等待上限剩余约 '+seconds+' 秒（服务端也可能提前过期）':'已超出等待上限，请重新生成二维码';return seconds;}
+remaining();setInterval(remaining,1000);
+async function showQR(){
+const button=byId('show');if(button.disabled)return;button.disabled=true;byId('qr').hidden=true;byId('status').textContent='正在本机浏览器解密…';
+try{
+ if(!remaining())throw new Error('expired');
+ if(!crypto.subtle)throw new Error('browser');
+ const pass=byId('password').value;byId('password').value='';
+ const source=await crypto.subtle.importKey('raw',new TextEncoder().encode(pass),'PBKDF2',false,['deriveKey']);
+ const key=await crypto.subtle.deriveKey({name:'PBKDF2',hash:'SHA-256',salt:decode(envelope.salt),iterations:envelope.iterations},source,{name:'AES-GCM',length:256},false,['decrypt']);
+ const aad=new TextEncoder().encode(JSON.stringify({v:envelope.v,purpose:envelope.purpose,scope:envelope.scope}));
+ const plain=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:decode(envelope.nonce),additionalData:aad,tagLength:128},key,decode(envelope.data)));
+ if(![137,80,78,71,13,10,26,10].every((v,i)=>plain[i]===v))throw new Error('format');
+ if(imageURL)URL.revokeObjectURL(imageURL);imageURL=URL.createObjectURL(new Blob([plain],{type:'image/png'}));
+ byId('qr').src=imageURL;byId('qr').hidden=false;byId('status').textContent='请用微信扫码，并在手机确认。登录结果请返回 GitHub Actions 查看。';
+}catch(error){byId('status').textContent=error.message==='expired'?'二维码已过期，请重新触发工作流。':error.message==='browser'?'此浏览器不支持 Web Crypto，请用新版 Chrome、Edge 或 Firefox 打开。':'解密失败，请确认口令与当前二维码附件匹配。';}
+finally{button.disabled=false;}}
+byId('show').addEventListener('click',showQR);byId('password').addEventListener('keydown',event=>{if(event.key==='Enter')showQR();});
+addEventListener('pagehide',()=>{if(imageURL)URL.revokeObjectURL(imageURL);});
+</script>
+</html>

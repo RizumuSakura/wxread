@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class FeatureScopeTests(unittest.TestCase):
     def test_removed_cli_and_configuration_are_absent(self):
         self.assertFalse((ROOT / "official_skill.py").exists())
+        self.assertFalse((ROOT / "qr_login.py").exists())
         for filename in (".env.example", "docker-compose.yml"):
             self.assertNotIn("WEREAD_API_KEY", (ROOT / filename).read_text(encoding="utf-8"))
 
@@ -21,7 +22,7 @@ class FeatureScopeTests(unittest.TestCase):
             self.assertIn(section, text)
 
     def test_runtime_imports_and_docker_copy_sources_exist(self):
-        for filename in ("main.py", "config.py", "qr_login.py", "login_store.py", "github_login_secret.py", "scheduler.py"):
+        for filename in ("main.py", "config.py", "weread_auth.py", "actions_login.py", "login_store.py", "scheduler.py"):
             tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
             for item in ast.walk(tree):
                 if isinstance(item, ast.ImportFrom):

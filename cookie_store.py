@@ -84,7 +84,7 @@ if __name__ == "__main__":
     from config import cookies
 
     if not cookies.get("wr_vid") or not cookies.get("wr_skey"):
-        raise SystemExit("缺少 wr_vid / wr_skey，请扫码并同步 WXREAD_LOGIN_JSON，或更新 WXREAD_CURL_BASH。")
+        raise SystemExit("缺少 wr_vid / wr_skey，请在 GitHub Actions 运行“扫码登录”，或更新旧 WXREAD_CURL_BASH。")
     cache_id = CookieStore(cookies).cache_id
     if os.getenv("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:

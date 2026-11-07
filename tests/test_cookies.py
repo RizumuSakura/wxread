@@ -251,14 +251,28 @@ class SessionTests(unittest.TestCase):
 
 
 class ReadingTests(unittest.TestCase):
+    def setUp(self):
+        from book_context import BookContext
+        self.context = BookContext("25615385", "被讨厌的勇气", "https://weread.qq.com/web/reader/8b9329607186dc198b9bdab",
+                                   172, 15, 389, 45, "真实服务端位置", "page-session", "page-clock", "wb-test", "token")
+        self.clock = 1000.0
+        def advance(seconds):
+            self.clock += seconds
+        for target, options in (("main.load_context", {"return_value": self.context}),
+                                ("main.enter_book", {}),
+                                ("main.time.monotonic", {"side_effect": lambda: self.clock}),
+                                ("main.time.sleep", {"side_effect": advance})):
+            patcher = patch(target, **options)
+            self.addCleanup(patcher.stop)
+            setattr(self, target.split(".")[-1] + "_mock", patcher.start())
+
     def response(self, body, status=200):
         response = requests.Response()
         response.status_code = status
         response._content = json.dumps(body).encode()
         return response
 
-    @patch("main.time.sleep")
-    def test_repeated_auth_failures_stop_instead_of_looping_forever(self, sleep):
+    def test_repeated_auth_failures_stop_instead_of_looping_forever(self):
         client = Mock()
         client.renew.return_value = True
         client.post.return_value = self.response({"errCode": -2012})
@@ -270,23 +284,22 @@ class ReadingTests(unittest.TestCase):
     def test_business_error_does_not_trigger_login_renewal(self):
         client = Mock()
         client.post.return_value = self.response({"errCode": -9999})
-        with patch.object(main, "READ_NUM", 1), self.assertRaisesRegex(RuntimeError, "errCode=-9999"):
-            main.run_reading(client, Mock())
-        self.assertEqual(client.renew.call_count, 1)  # startup only
+        with self.assertRaisesRegex(RuntimeError, "errCode=-9999"):
+            main.run_reading(client, Mock(), count=1)
+        self.assertEqual(client.renew.call_count, 1)
 
-    @patch("main.time.sleep")
-    def test_startup_renewal_failure_can_still_use_valid_read_session(self, sleep):
+    def test_startup_renewal_failure_can_still_use_valid_read_session(self):
         client = Mock()
         client.renew.return_value = False
         client.post.return_value = self.response({"succ": 1, "synckey": 1})
-        with patch.object(main, "READ_NUM", 1):
-            self.assertEqual(main.run_reading(client, Mock()), 1)
+        result = main.run_reading(client, Mock(), count=1)
+        self.assertEqual(result.completed, 1)
 
     def test_succ_zero_is_not_counted_as_success(self):
         client = Mock()
         client.post.return_value = self.response({"succ": 0})
-        with patch.object(main, "READ_NUM", 1), self.assertRaises(RuntimeError):
-            main.run_reading(client, Mock())
+        with self.assertRaises(RuntimeError):
+            main.run_reading(client, Mock(), count=1)
 
     def test_importing_main_has_no_network_side_effect(self):
         with patch("requests.Session.request", side_effect=AssertionError("unexpected request")):
@@ -298,9 +311,60 @@ class ReadingTests(unittest.TestCase):
         unauthorized.status_code = 401
         unauthorized._content = b"Unauthorized"
         client.post.side_effect = [unauthorized, self.response({"succ": 1, "synckey": 1})]
-        with patch.object(main, "READ_NUM", 1), patch("main.time.sleep"):
-            self.assertEqual(main.run_reading(client, Mock()), 1)
+        self.assertEqual(main.run_reading(client, Mock(), count=1).completed, 1)
         self.assertEqual(client.renew.call_count, 2)
+
+    def test_book_chapter_and_position_remain_consistent(self):
+        client = Mock()
+        client.post.return_value = self.response({"succ": 1, "synckey": 1})
+        result = main.run_reading(client, Mock(), count=3)
+        from reader_protocol import encode_id, cal_hash, encode_data
+        self.assertEqual(result.book_id, "25615385")
+        self.assertEqual(result.acknowledged_seconds, 90)
+        for args in client.post.call_args_list:
+            payload = args.args[1]
+            self.assertEqual(payload["b"], encode_id("25615385"))
+            self.assertEqual(payload["c"], encode_id(172))
+            self.assertEqual((payload["ci"], payload["co"], payload["pr"]), (15, 389, 45))
+            self.assertEqual(payload["rt"], 30)
+            self.assertEqual(payload["s"], cal_hash(encode_data(payload)))
+
+    def test_first_report_waits_before_posting(self):
+        client = Mock()
+        clock_on_post = []
+        def reply_after_wait(*args, **kwargs):
+            clock_on_post.append(self.clock)
+            return self.response({"succ": 1, "synckey": 1})
+        client.post.side_effect = reply_after_wait
+        main.run_reading(client, Mock(), count=1)
+        self.assertEqual(clock_on_post, [1030.0])
+
+    def test_slow_wait_does_not_claim_more_than_one_period(self):
+        client = Mock()
+        client.post.return_value = self.response({"succ": 1, "synckey": 1})
+        def delayed_sleep(seconds):
+            self.clock += seconds + 300
+        self.sleep_mock.side_effect = delayed_sleep
+        result = main.run_reading(client, Mock(), count=1)
+        self.assertEqual(result.acknowledged_seconds, 30)
+        self.assertEqual(client.post.call_args.args[1]["rt"], 30)
+
+    def test_repair_uses_only_the_target_book(self):
+        client = Mock()
+        client.post.side_effect = [self.response({"succ": 1}), self.response({}),
+                                   self.response({"succ": 1, "synckey": 1})]
+        result = main.run_reading(client, Mock(), count=1)
+        self.assertEqual(result.completed, 1)
+        self.assertEqual(client.post.call_args_list[1].args[1], {"bookIds": ["25615385"]})
+        self.assertEqual(self.load_context_mock.call_count, 2)
+
+    def test_invalid_read_count_fails_before_network(self):
+        for count in (0, -1, 601, 1.5, True):
+            client = Mock()
+            with self.assertRaises(RuntimeError):
+                main.run_reading(client, Mock(), count=count)
+            client.renew.assert_not_called()
+            client.post.assert_not_called()
 
     @patch("main.setup_logging", return_value=Mock())
     @patch("main.push")
@@ -311,6 +375,7 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(main.main(check_auth=True), 0)
         reading.assert_not_called()
         push.assert_not_called()
+        self.load_context_mock.assert_not_called()
         session.return_value.close.assert_called_once()
 
 

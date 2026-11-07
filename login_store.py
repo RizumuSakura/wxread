@@ -55,13 +55,22 @@ def validate_login(value):
 
 
 def load_login():
+    path = login_path()
+    if path.is_symlink() or path.parent.is_symlink():
+        raise RuntimeError("登录状态路径不能是符号链接。")
+    # A confirmed cloud login is newer than the optional legacy bootstrap Secret.
+    if os.getenv("WXREAD_QR_PASSWORD") and path.exists() and path.read_bytes().lstrip().startswith(b"{"):
+        from cloud_crypto import decrypt
+        try:
+            return validate_login(json.loads(decrypt(path.read_bytes(), "login-state")))
+        except (OSError, ValueError, TypeError) as exc:
+            raise RuntimeError("云端登录状态无效，请重新运行“扫码登录”工作流。") from exc
     bootstrap = os.getenv(SECRET_NAME)
     if bootstrap:
         try:
             return validate_login(json.loads(bootstrap))
         except (ValueError, TypeError) as exc:
             raise RuntimeError("WXREAD_LOGIN_JSON 无效，请重新扫码并同步登录 Secret。") from exc
-    path = login_path()
     if not path.exists():
         return None
     key_path = path.with_suffix(".key")
@@ -71,12 +80,16 @@ def load_login():
         data = Fernet(key_path.read_bytes()).decrypt(path.read_bytes())
         return validate_login(json.loads(data))
     except (OSError, ValueError, TypeError, InvalidToken) as exc:
-        raise RuntimeError("无法解密本地登录状态，请重新运行 python qr_login.py。") from exc
+        raise RuntimeError("无法解密既有登录状态，请在 GitHub Actions 重新运行“扫码登录”。") from exc
 
 
 def save_login(value):
     value = validate_login(value)
     path = login_path()
+    if os.getenv("WXREAD_QR_PASSWORD"):
+        from cloud_crypto import encrypt
+        atomic_private_write(path, encrypt(json.dumps(value, ensure_ascii=False).encode(), "login-state"))
+        return path
     key_path = path.with_suffix(".key")
     if key_path.is_symlink() or path.parent.is_symlink():
         raise RuntimeError("登录状态路径不能是符号链接。")

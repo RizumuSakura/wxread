@@ -1,98 +1,111 @@
 name: wxread
-
-concurrency:
-  group: ${{ github.workflow }} # 使用工作流名称作为并发组的key
-  cancel-in-progress: false   # 续期可能轮换凭据，避免取消任务导致新 Cookie 未保存
+run-name: ${{ inputs.check_auth && '仅验证登录续期' || '指定书籍阅读' }}
 
 on:
   schedule:
-    # 凌晨任务：北京时间每天 01:07（UTC 前一天 17:07），避开 GitHub Actions 整点高峰
+    # 01:07 Asia/Shanghai, daily
     - cron: '7 17 * * *'
-    # 早间任务：北京时间每天 05:00（UTC 前一天 21:00）
-    #- cron: '0 21 * * *'
-    # 午间任务：北京时间每天 11:40（UTC 03:40）
-    #- cron: '40 3 * * *'
-    # 晚间任务：北京时间每天 22:00（UTC 14:00）
-    #- cron: '0 14 * * *'
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
     inputs:
       check_auth:
         description: 仅验证 Cookie 续期（不阅读、不推送）
         type: boolean
         default: false
+      book_url:
+        description: 本次书籍链接或数字 bookId；留空使用仓库 WXREAD_BOOK_URL，未配置则默认《被讨厌的勇气》
+        type: string
+        default: ''
+      read_num:
+        description: 本次真实等待周期数（每段约 30 秒，1–600）；留空使用 READ_NUM，默认 40
+        type: string
+        default: ''
+      skip_push:
+        description: 仅本次不发送通知（测试时可勾选）
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wxread-session-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   deploy:
-    runs-on: ubuntu-22.04
-    environment: AutoRead  # 指定环境
-    permissions:
-      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    environment: AutoRead
     env:
+      PYTHONUNBUFFERED: '1'
+      WXREAD_QR_PASSWORD: ${{ secrets.WXREAD_QR_PASSWORD }}
+      WXREAD_LOGIN_JSON: ${{ secrets.WXREAD_LOGIN_JSON }}
+      WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
+      WXREAD_LOGIN_FILE: .state/login.enc
       WXREAD_COOKIE_FILE: .state/cookies.enc
 
     steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
 
-    - name: Set DNS to Google's DNS
-      run: |
-        echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
-        echo "nameserver 8.8.4.4" | sudo tee -a /etc/resolv.conf
+      - name: Prepare encrypted session cache
+        id: cache
+        run: python actions_login.py cache-key
 
-    - name: Checkout repository
-      uses: actions/checkout@v7
+      - name: Restore latest login and Cookie state
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            .state/login.enc
+            .state/cookies.enc
+            .state/device.json
+          key: ${{ steps.cache.outputs.cache_key }}
+          restore-keys: ${{ steps.cache.outputs.cache_prefix }}
 
-    - name: Set up Python
-      uses: actions/setup-python@v7
-      with:
-        python-version: '3.10'
+      - name: Migrate latest legacy Cookie cache if needed
+        if: ${{ steps.cache.outputs.mode == 'cloud' && steps.cache.outputs.legacy_cache_prefix != '' && hashFiles('.state/login.enc') == '' && hashFiles('.state/cookies.enc') == '' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: .state/cookies.enc
+          key: ${{ steps.cache.outputs.legacy_cache_prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ${{ steps.cache.outputs.legacy_cache_prefix }}
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Run fixed-book task or renewal-only check
+        timeout-minutes: 330
+        env:
+          WXREAD_BOOK_URL: ${{ inputs.book_url || vars.WXREAD_BOOK_URL }}
+          READ_NUM: ${{ inputs.read_num || vars.READ_NUM }}
+          WXREAD_CHECK_AUTH: ${{ inputs.check_auth }}
+          WXREAD_SKIP_PUSH: ${{ inputs.skip_push }}
+          PUSH_METHOD: ${{ secrets.PUSH_METHOD }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          WXPUSHER_SPT: ${{ secrets.WXPUSHER_SPT }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SERVERCHAN_SPT: ${{ secrets.SERVERCHAN_SPT }}
+        run: |
+          if [ "$WXREAD_SKIP_PUSH" = "true" ]; then
+            export PUSH_METHOD=''
+          fi
+          if [ "$WXREAD_CHECK_AUTH" = "true" ]; then
+            python main.py --check-auth
+          else
+            python main.py
+          fi
 
-    - name: Prepare encrypted Cookie cache
-      id: cookie-cache
-      env:
-        WXREAD_LOGIN_JSON: ${{ secrets.WXREAD_LOGIN_JSON }}
-        WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
-      run: python cookie_store.py
-
-    - name: Restore latest Cookie state
-      uses: actions/cache/restore@v6
-      with:
-        path: .state/cookies.enc
-        key: wxread-cookie-v1-${{ steps.cookie-cache.outputs.cache_id }}-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: |
-          wxread-cookie-v1-${{ steps.cookie-cache.outputs.cache_id }}-${{ github.ref_name }}-
-
-    - name: Run deployment script
-      env:
-        WXREAD_LOGIN_JSON: ${{ secrets.WXREAD_LOGIN_JSON }}
-        WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
-        PUSH_METHOD: ${{ secrets.PUSH_METHOD }}
-        PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-        WXPUSHER_SPT: ${{ secrets.WXPUSHER_SPT }}
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        SERVERCHAN_SPT:  ${{ secrets.SERVERCHAN_SPT }}
-        READ_NUM: ${{ vars.READ_NUM }}  # 使用 Repository Variables
-        WXREAD_CHECK_AUTH: ${{ inputs.check_auth }}
-
-      run: |
-        if [ "$WXREAD_CHECK_AUTH" = "true" ]; then
-          python main.py --check-auth
-        else
-          python main.py
-        fi
-
-    # Save even if a later reading request fails: renewal may already have
-    # invalidated the previous refresh token. This file contains ciphertext only.
-    - name: Save updated Cookie state
-      if: ${{ always() && steps.cookie-cache.outcome == 'success' && hashFiles('.state/cookies.enc') != '' }}
-      uses: actions/cache/save@v6
-      with:
-        path: .state/cookies.enc
-        key: wxread-cookie-v1-${{ steps.cookie-cache.outputs.cache_id }}-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save updated encrypted session state
+        if: ${{ always() && steps.cache.outcome == 'success' && hashFiles('.state/cookies.enc') != '' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            .state/login.enc
+            .state/cookies.enc
+            .state/device.json
+          key: ${{ steps.cache.outputs.cache_key }}
 
   keepalive-job:
     name: Keepalive Workflow

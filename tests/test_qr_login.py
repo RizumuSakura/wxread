@@ -1,4 +1,3 @@
-import base64
 import json
 import os
 import tempfile
@@ -7,12 +6,10 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import requests
-from nacl.public import PrivateKey, SealedBox
 
-from github_login_secret import upload_login
 from login_store import current_login, load_login, save_login
 from cookie_store import CookieStore
-from qr_login import QRLogin, create_qr, device_fingerprint
+from weread_auth import QRLogin, qr_png, device_fingerprint
 
 
 LOGIN = {"version": 1, "cookies": {"wr_vid": "123456789", "wr_skey": "session-private-value", "wr_rt": "refresh-private-value"},
@@ -32,7 +29,7 @@ class LoginStoreTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "login.enc"
-        self.environment = patch.dict(os.environ, {"WXREAD_LOGIN_FILE": str(self.path), "WXREAD_LOGIN_JSON": ""})
+        self.environment = patch.dict(os.environ, {"WXREAD_LOGIN_FILE": str(self.path), "WXREAD_LOGIN_JSON": "", "WXREAD_QR_PASSWORD": ""})
         self.environment.start()
         self.addCleanup(self.environment.stop)
 
@@ -68,8 +65,8 @@ class LoginStoreTests(unittest.TestCase):
         fingerprint = device_fingerprint()
         self.assertEqual(fingerprint, device_fingerprint())
         self.assertTrue(0 <= int(fingerprint) <= 0xffffffff)
-        path = create_qr("test-uid")
-        self.assertTrue(path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+        data = qr_png("test-uid")
+        self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
 
     def test_secret_sync_exports_latest_rotated_cookies(self):
         save_login(LOGIN)
@@ -134,32 +131,11 @@ class QRProtocolTests(unittest.TestCase):
 
     def test_account_validation_retries_temporary_401_after_phone_confirmation(self):
         self.http.get.side_effect = [reply({}, status=401), reply({"name": "Test account"})]
-        with patch("qr_login.time.sleep"):
+        with patch("weread_auth.time.sleep"):
             login = self.client.complete({"succeed": True, "webLoginVid": 123, "accessToken": "valid-session"})
         self.assertEqual(login["cookies"]["wr_skey"], "valid-session")
         self.assertEqual(login["api_key"], "")
         self.assertEqual(self.http.get.call_count, 2)
-
-
-class GitHubSecretTests(unittest.TestCase):
-    def test_environment_secret_is_sealed_before_upload(self):
-        private = PrivateKey.generate()
-        http = Mock()
-        http.get.return_value = reply({"key_id": "key-1", "key": base64.b64encode(bytes(private.public_key)).decode()})
-        http.put.return_value = reply({}, status=204)
-        upload_login("owner/repository", LOGIN, environment="AutoRead", token="github-test-token", session=http)
-        args, kwargs = http.put.call_args
-        self.assertEqual(args[0], "https://api.github.com/repos/owner/repository/environments/AutoRead/secrets/WXREAD_LOGIN_JSON")
-        self.assertNotIn(LOGIN["api_key"], json.dumps(kwargs["json"]))
-        raw = SealedBox(private).decrypt(base64.b64decode(kwargs["json"]["encrypted_value"]))
-        self.assertEqual(json.loads(raw)["cookies"], LOGIN["cookies"])
-        self.assertFalse(kwargs["allow_redirects"])
-
-    def test_invalid_repo_is_rejected_before_credential_lookup(self):
-        with patch("github_login_secret._github_token") as token:
-            with self.assertRaises(RuntimeError):
-                upload_login("../../outside", LOGIN)
-            token.assert_not_called()
 
 
 if __name__ == "__main__":
