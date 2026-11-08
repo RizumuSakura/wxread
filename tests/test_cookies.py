@@ -254,7 +254,8 @@ class ReadingTests(unittest.TestCase):
     def setUp(self):
         from book_context import BookContext
         self.context = BookContext("25615385", "被讨厌的勇气", "https://weread.qq.com/web/reader/8b9329607186dc198b9bdab",
-                                   172, 15, 389, 45, "真实服务端位置", "page-session", "page-clock", "wb-test", "token")
+                                   172, 15, 389, 45, "真实服务端位置", "page-session", "page-clock", "wb-test", "token",
+                                   original={"chapterUid": 172, "chapterOffset": 389, "progress": 45})
         self.clock = 1000.0
         def advance(seconds):
             self.clock += seconds

@@ -4,6 +4,8 @@ All credentials, positions and responses here are synthetic. No live HTTP is use
 The checkpoint stub copies the same encrypted files as the workflow cache.
 """
 from copy import deepcopy
+from dataclasses import replace
+from itertools import cycle
 import json
 import os
 from pathlib import Path
@@ -43,6 +45,7 @@ class ReaderService(BaseAdapter):
         super().__init__()
         self.position = deepcopy(ORIGINAL if position is None else position)
         self.writes = []
+        self.period_outcomes = []
         self.offline = self.ignore_writes = self.drift_once = False
 
     def send(self, request, **kwargs):
@@ -60,13 +63,14 @@ class ReaderService(BaseAdapter):
             assert payload["c"] == encode_id(172)
             assert payload["s"] == cal_hash(encode_data(payload))
             self.writes.append(payload)
-            if not self.ignore_writes:
+            outcome = self.period_outcomes.pop(0) if "rt" in payload and self.period_outcomes else {"succ": 1, "synckey": 1}
+            if not self.ignore_writes and outcome.get("succ") == 1:
                 self.position = {"chapterUid": 172, "chapterOffset": payload["co"], "progress": payload["pr"],
                                  "summary": payload["sm"], "appId": payload["appId"], "updateTime": payload["ct"]}
                 if self.drift_once:
                     self.position["chapterOffset"] += 1
                     self.drift_once = False
-            body = '{"succ":1,"synckey":1}'
+            body = json.dumps(outcome)
         else:
             raise AssertionError(f"Non-fixture request blocked: {request.method}")
         response = requests.Response()
@@ -161,6 +165,71 @@ class RecoveryIntegrationTests(unittest.TestCase):
             self.assertEqual(main.main(), 1)
         reading.assert_not_called()
         self.assertEqual(reading_cursor(), "202")
+
+    def run_pinned_periods(self, count=3):
+        # Synthetic clock: this validates positions, not real waiting/credited time.
+        clock = [0]
+        def elapsed(since):
+            clock[0] += main.INTERVAL_SECONDS
+        with patch("main.wait_interval", side_effect=elapsed), \
+             patch("main.time.monotonic", side_effect=lambda: clock[0]), \
+             patch("main.random.randrange", side_effect=cycle((0, 999))):
+            return main.run_single_book(self.client, Mock(), DEFAULT_BOOK_URL, count, refresh_session=False)
+
+    def assert_all_submissions_keep_original_position(self):
+        self.assertTrue(self.service.writes)
+        for payload in self.service.writes:
+            self.assertEqual((payload["c"], payload["co"], payload["pr"]),
+                             (encode_id(ORIGINAL["chapterUid"]), ORIGINAL["chapterOffset"], ORIGINAL["progress"]))
+        self.assertTrue(pg.same_position(self.service.position, ORIGINAL))
+        self.assertEqual(reading_cursor(), "202")
+
+    def test_all_periods_keep_original_chapter_offset_and_fractional_progress(self):
+        result = self.run_pinned_periods()
+        self.assertEqual(result.completed, 3)
+        self.assert_all_submissions_keep_original_position()
+        self.assertEqual({p["rn"] for p in self.service.writes if "rt" in p}, {0, 999})
+        self.assertIsNone(pending_progress())
+
+    def test_session_renewal_keeps_original_chapter_and_position(self):
+        self.service.period_outcomes = [{"errCode": -2012}]
+        with patch.object(self.client, "renew", return_value=True) as renew:
+            result = self.run_pinned_periods(count=2)
+        renew.assert_called_once()
+        self.assertEqual(result.completed, 2)
+        self.assert_all_submissions_keep_original_position()
+
+    def test_synckey_repair_keeps_original_chapter_and_position(self):
+        self.service.period_outcomes = [{"succ": 1}]
+        result = self.run_pinned_periods(count=2)
+        self.assertEqual(result.completed, 2)
+        self.assert_all_submissions_keep_original_position()
+
+    def test_initial_context_cannot_submit_different_chapter_offset_or_percentage(self):
+        context = load_context(self.client, DEFAULT_BOOK_URL)
+        for change in ({"chapter_uid": 1}, {"offset": 0}, {"progress": 0}):
+            with self.subTest(change=change), patch("main.load_context", return_value=replace(context, **change)), \
+                 self.assertRaisesRegex(RuntimeError, "原始阅读进度"):
+                self.run_pinned_periods(count=1)
+        self.assertFalse(self.service.writes)
+        self.assertIsNone(pending_progress())
+
+    def test_rebuilt_session_cannot_enter_another_chapter(self):
+        context = load_context(self.client, DEFAULT_BOOK_URL)
+        self.service.period_outcomes = [{"errCode": -2012}]
+        with patch("main.load_context", side_effect=[context, replace(context, chapter_uid=1)]), \
+             patch.object(self.client, "renew", return_value=True), self.assertRaisesRegex(RuntimeError, "原始阅读进度"):
+            self.run_pinned_periods(count=1)
+        self.assertEqual(len(self.service.writes), 2)  # Original entry and rejected period, no new chapter entry.
+        self.assert_all_submissions_keep_original_position()
+        self.assertIsNone(pending_progress())
+
+    def test_missing_original_snapshot_never_submits_a_default_position(self):
+        context = load_context(self.client, DEFAULT_BOOK_URL)
+        with patch("main.load_context", return_value=replace(context, original=None)), self.assertRaises(RuntimeError):
+            self.run_pinned_periods(count=1)
+        self.assertFalse(self.service.writes)
+        self.assertIsNone(pending_progress())
 
     def test_restores_changed_position_with_signed_request_and_verified_readback(self):
         guard = self.start_with_own_drift()

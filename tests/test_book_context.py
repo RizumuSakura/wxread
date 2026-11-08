@@ -1,4 +1,5 @@
 import json
+from dataclasses import FrozenInstanceError, replace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -62,6 +63,20 @@ class BookContextTests(unittest.TestCase):
         context = load_context(self.client(), DEFAULT_BOOK_URL)
         self.assertEqual(context.original["progress"], 45.1234)
         self.assertEqual(context.position(1)["pr"], 45.1234)
+
+    def test_book_and_progress_fields_are_immutable(self):
+        context = load_context(self.client(), DEFAULT_BOOK_URL)
+        for field, value in (("book_id", "other"), ("chapter_uid", 1), ("chapter_idx", 0),
+                             ("offset", 0), ("progress", 0)):
+            with self.subTest(field=field), self.assertRaises(FrozenInstanceError):
+                setattr(context, field, value)
+
+    def test_position_contract_rejects_another_chapter_offset_or_percentage(self):
+        context = load_context(self.client(), DEFAULT_BOOK_URL)
+        context.require_position(context.original)
+        for change in ({"chapter_uid": 1}, {"offset": 0}, {"progress": 0}):
+            with self.subTest(change=change), self.assertRaisesRegex(RuntimeError, "原始阅读进度"):
+                replace(context, **change).require_position(context.original)
 
     def test_no_saved_position_is_rejected_before_catalog(self):
         self.reader["progress"] = {}

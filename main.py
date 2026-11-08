@@ -11,7 +11,7 @@ import time
 
 import requests
 
-from book_context import BookUnavailableError, CATALOG_URL, load_context
+from book_context import BookUnavailableError, CATALOG_URL, load_context, saved_position
 from config import headers, cookies, READ_NUM, BOOK_URL, PUSH_METHOD
 from log_utils import setup_logging
 from login_store import reading_cursor, save_reading_cursor
@@ -109,6 +109,7 @@ def run_single_book(client, refresh_print, reference=None, count=None, refresh_s
     context = load_context(client, reference)
     if expected_book_id is not None and context.book_id != expected_book_id:
         raise RuntimeError("书架条目与阅读器返回的书籍标识不一致，停止提交。")
+    context.require_position(context.original)
     label = display_label or (safe_label(context.title) if disclose else "私密书籍")
     chapter = safe_label(context.chapter_title or f"chapterUid={context.chapter_uid}") if disclose else "私密章节"
     logging.info("当前书籍：%s；章节：%s；起点 %s%%，章节位置 %s；本书目标 %s 段。",
@@ -122,7 +123,7 @@ def run_single_book(client, refresh_print, reference=None, count=None, refresh_s
 
 
 def read_periods(client, refresh_print, reference, count, context, guard, label):
-    original = context.original
+    original = saved_position(context.original)
     book_id = context.book_id
     completed = seconds = repairs = auth_attempts = 0
     since = time.monotonic()
@@ -132,6 +133,7 @@ def read_periods(client, refresh_print, reference, count, context, guard, label)
         duration = min(INTERVAL_SECONDS, elapsed)
         if duration <= 0:
             raise RuntimeError("未观察到有效的真实等待时间，停止提交。")
+        context.require_position(original)
         guard.before_write()
         milliseconds = int(time.time() * 1000)
         nonce = random.randrange(1000)
@@ -164,6 +166,7 @@ def read_periods(client, refresh_print, reference, count, context, guard, label)
         context = load_context(client, reference, position=original)
         if context.book_id != book_id:
             raise RuntimeError("重建会话后书籍标识变化，停止提交。")
+        context.require_position(original)
         guard.before_write()
         enter_book(client, context)
         since = time.monotonic()

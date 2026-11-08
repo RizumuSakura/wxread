@@ -86,7 +86,8 @@ class ShelfReadingTests(unittest.TestCase):
 
 class PrivateBookLoggingTests(unittest.TestCase):
     def test_single_period_used_by_shelf_does_not_log_private_book_identity(self):
-        context = BookContext("101", "Private shelf title", "https://weread.qq.com/web/reader/test", 172, 15, 0, 0, "private", "ps", "pc", "app", "token")
+        context = BookContext("101", "Private shelf title", "https://weread.qq.com/web/reader/test", 172, 15, 0, 0, "private", "ps", "pc", "app", "token",
+                              original={"chapterUid": 172, "chapterOffset": 0, "progress": 0})
         client = Mock()
         reply = requests.Response()
         reply.status_code = 200

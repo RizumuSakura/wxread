@@ -30,7 +30,7 @@ def reader_url(reference):
     return value
 
 
-@dataclass
+@dataclass(frozen=True)
 class BookContext:
     book_id: str
     title: str
@@ -46,6 +46,14 @@ class BookContext:
     token: str
     chapter_title: str = ""
     original: dict = None
+
+    def require_position(self, expected):
+        """Fail closed if a rebuilt context would move away from the snapshot."""
+        wanted = saved_position(expected)
+        planned = saved_position({"chapterUid": self.chapter_uid,
+                                  "chapterOffset": self.offset, "progress": self.progress})
+        if any(planned[key] != wanted[key] for key in ("chapterUid", "chapterOffset", "progress")):
+            raise RuntimeError("提交位置与原始阅读进度不一致，已停止，未切换章节或移动进度。")
 
     def position(self, now):
         return {"appId": self.application_id, "b": encode_id(self.book_id), "c": encode_id(self.chapter_uid),

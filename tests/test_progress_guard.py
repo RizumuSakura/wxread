@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import replace
 import os
 import subprocess
 import unittest
@@ -53,6 +54,21 @@ class ProgressGuardTests(unittest.TestCase):
             with self.guard():
                 self.fail("not safe")
         self.checkpoint_mock.assert_not_called()
+
+    def test_original_journal_does_not_alias_mutable_context_metadata(self):
+        with self.guard() as guard:
+            self.context.original["chapterUid"] = 1
+            self.assertEqual(guard.record["position"]["chapterUid"], 172)
+            guard.before_write()
+        self.writer.assert_not_called()
+
+    def test_restore_cannot_submit_a_context_pointing_at_another_chapter(self):
+        wrong = replace(self.context, chapter_uid=1)
+        with patch("progress_guard.load_context", return_value=wrong), self.assertRaisesRegex(RuntimeError, "保留恢复记录"):
+            with self.guard():
+                self.server.update(chapterOffset=390, appId="web-script", updateTime=1000)
+        self.writer.assert_not_called()
+        self.assertIsNotNone(self.pending)
 
     def test_phone_change_before_write_is_preserved_and_stops(self):
         with self.assertRaises(pg.ProgressConflict):

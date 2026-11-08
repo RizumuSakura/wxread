@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import time
 
-from book_context import load_context, read_position
+from book_context import load_context, read_position, saved_position
 from login_store import load_login, pending_progress, save_pending_progress
 
 
@@ -54,7 +54,7 @@ class ProgressGuard:
             raise RuntimeError("缺少已保存的登录状态或原始进度，未开始阅读。")
         self.record = {"version": 1, "owner": login["cookies"]["wr_vid"],
                        "book_id": self.context.book_id, "reference": self.context.url,
-                       "position": self.context.original, "app_id": self.context.application_id,
+                       "position": saved_position(self.context.original), "app_id": self.context.application_id,
                        "last_write": time.time()}
         save_pending_progress(self.record)
         checkpoint()  # Must finish before the first /book/read write.
@@ -106,6 +106,7 @@ class ProgressGuard:
             if not attributable:
                 raise ProgressUncertain("无法确认变更来自本次写入，未回滚当前进度；已停止并保留恢复记录，请先人工核对原始位置。")
             context = load_context(self.client, self.record["reference"], position=original)
+            context.require_position(original)
             # Restoration is also a write. Publish its intent before submitting
             # so a failed response/readback can be retried from a fresh runner.
             self.record["restore_from"] = dict(current)
