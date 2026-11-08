@@ -1,4 +1,4 @@
-"""Fixed-book reading session with measured, nonaccelerated reporting intervals."""
+"""Shelf cycling or explicit-book reading with measured reporting intervals."""
 import argparse
 from dataclasses import dataclass
 import hashlib
@@ -8,12 +8,14 @@ import time
 
 import requests
 
-from book_context import CATALOG_URL, load_context
+from book_context import BookUnavailableError, CATALOG_URL, load_context
 from config import headers, cookies, READ_NUM, BOOK_URL, PUSH_METHOD
 from log_utils import setup_logging
+from login_store import reading_cursor, save_reading_cursor
 from push import push
 from reader_protocol import encode_data, cal_hash
 from weread_session import WeReadSession
+from weread_shelf import load_shelf
 
 
 READ_URL = "https://weread.qq.com/web/book/read"
@@ -31,6 +33,8 @@ class ReadingResult:
     title: str
     completed: int
     acknowledged_seconds: int
+    mode: str = "single"
+    books_read: int = 1
 
 
 def refresh_cookie(client, strict=True):
@@ -87,16 +91,20 @@ def wait_interval(since):
         time.sleep(remaining)
 
 
-def run_reading(client, refresh_print, reference=None, count=None):
+def run_single_book(client, refresh_print, reference=None, count=None, refresh_session=True, disclose=True, expected_book_id=None):
     count = READ_NUM if count is None else count
     if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 600:
         raise RuntimeError("READ_NUM 必须为 1–600 的正整数。")
     reference = BOOK_URL if reference is None else reference
-    refresh_cookie(client, strict=False)
+    if refresh_session:
+        refresh_cookie(client, strict=False)
     context = load_context(client, reference)
+    if expected_book_id is not None and context.book_id != expected_book_id:
+        raise RuntimeError("书架条目与阅读器返回的书籍标识不一致，停止提交。")
     enter_book(client, context)
-    logging.info("固定目标书籍：%s；bookId=%s；chapterUid=%s，目标 %s 段。",
-                 context.title, context.book_id, context.chapter_uid, count)
+    if disclose:
+        logging.info("固定目标书籍：%s；bookId=%s；chapterUid=%s，目标 %s 段。",
+                     context.title, context.book_id, context.chapter_uid, count)
     completed = seconds = repairs = auth_attempts = 0
     since = time.monotonic()
     while completed < count:
@@ -118,7 +126,8 @@ def run_reading(client, refresh_print, reference=None, count=None):
                 seconds += duration
                 repairs = auth_attempts = 0
                 since = time.monotonic()
-                refresh_print(f"目标 bookId={context.book_id}：已确认 {completed}/{count} 段，提交实际等待 {seconds} 秒（非到账时长证明）")
+                if disclose:
+                    refresh_print(f"目标 bookId={context.book_id}：已确认 {completed}/{count} 段，提交实际等待 {seconds} 秒（非到账时长证明）")
                 continue
             repairs += 1
             if repairs > SYNCKEY_REPAIR_LIMIT:
@@ -134,9 +143,57 @@ def run_reading(client, refresh_print, reference=None, count=None):
             raise RuntimeError(f"read 接口异常：HTTP {response.status_code}，errCode={result.get('errCode')}；停止本次任务。")
         # A new session/repair starts a new measured period; never backdate it.
         context = load_context(client, reference)
+        if expected_book_id is not None and context.book_id != expected_book_id:
+            raise RuntimeError("重建会话后书籍标识变化，停止提交。")
         enter_book(client, context)
         since = time.monotonic()
     return ReadingResult(context.book_id, context.title, completed, seconds)
+
+
+def run_reading(client, refresh_print, reference=None, count=None):
+    count = READ_NUM if count is None else count
+    if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 600:
+        raise RuntimeError("READ_NUM 必须为 1–600 的正整数。")
+    reference = (BOOK_URL if reference is None else reference).strip()
+    if reference:
+        return run_single_book(client, refresh_print, reference, count)
+    shelf = load_shelf()
+    active = list(shelf.books)
+    if not active:
+        raise RuntimeError("个人书架没有可用于网页阅读的电子书。")
+    cursor = reading_cursor()
+    index = next((i for i, item in enumerate(active) if item.book_id == cursor), 0)
+    if cursor and any(item.book_id == cursor for item in active):
+        logging.info("已恢复书架阅读游标。")
+    refresh_cookie(client, strict=False)
+    logging.info("书架循环：电子书条目 %s，可网页阅读 %s；专辑 %s、文章收藏入口 %s 不参与。目标合计 %s 段。",
+                 shelf.ebook_entries, len(active), shelf.albums, shelf.article_collection, count)
+    completed = seconds = 0
+    visited = set()
+    while completed < count:
+        candidate = active[index]
+        try:
+            result = run_single_book(client, refresh_print, candidate.reference, 1,
+                                     refresh_session=False, disclose=False, expected_book_id=candidate.book_id)
+        except (BookUnavailableError, requests.HTTPError) as exc:
+            if isinstance(exc, requests.HTTPError) and getattr(exc.response, "status_code", None) not in (404, 410):
+                raise
+            logging.warning("书架中的一个条目当前不可网页阅读，本轮跳过。")
+            active.pop(index)
+            if not active:
+                raise RuntimeError("书架没有可继续读取的电子书，停止本次任务。") from exc
+            index %= len(active)
+            continue
+        if result.completed != 1 or not 0 < result.acknowledged_seconds <= INTERVAL_SECONDS:
+            raise RuntimeError("书架单段返回结果无效，停止累计。")
+        completed += 1
+        seconds += result.acknowledged_seconds
+        visited.add(result.book_id)
+        index = (index + 1) % len(active)
+        save_reading_cursor(active[index].book_id)
+        # Shelf titles and IDs may be private: never expose them in public logs.
+        refresh_print(f"书架循环：已确认 {completed}/{count} 段，涉及 {len(visited)} 本，提交实际等待 {seconds} 秒")
+    return ReadingResult("", "个人书架循环", completed, seconds, mode="shelf", books_read=len(visited))
 
 
 def main(check_auth=False, book_url=None, read_num=None):
@@ -149,9 +206,15 @@ def main(check_auth=False, book_url=None, read_num=None):
             logging.info("登录续期检查通过，未执行阅读或消息推送。")
             return 0
         result = run_reading(client, refresh_print, book_url, read_num)
-        logging.info("固定书籍任务结束；已确认 %s 段，提交实际等待 %s 秒。服务端是否计入请以客户端记录为准。",
-                     result.completed, result.acknowledged_seconds)
-        push(f"微信读书任务完成。\n书籍：{result.title}\nbookId：{result.book_id}\n"
+        if result.mode == "shelf":
+            logging.info("书架循环任务结束；已确认 %s 段，涉及 %s 本，提交实际等待 %s 秒。",
+                         result.completed, result.books_read, result.acknowledged_seconds)
+            label = f"个人书架循环：{result.books_read} 本"
+        else:
+            logging.info("固定书籍任务结束；已确认 %s 段，提交实际等待 %s 秒。服务端是否计入请以客户端记录为准。",
+                         result.completed, result.acknowledged_seconds)
+            label = f"书籍：{result.title}\nbookId：{result.book_id}"
+        push(f"微信读书任务完成。\n{label}\n"
              f"接口确认：{result.completed} 段，提交实际等待 {result.acknowledged_seconds} 秒。\n"
              "这不是服务端到账时长证明。", PUSH_METHOD, is_success=True)
         return 0
@@ -169,7 +232,7 @@ def main(check_auth=False, book_url=None, read_num=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--check-auth", action="store_true", help="仅检查登录续期，不执行阅读或推送")
-    parser.add_argument("--book-url", help="微信读书阅读器链接或数字 bookId，不指定则使用 WXREAD_BOOK_URL")
+    parser.add_argument("--book-url", help="阅读器链接或数字 bookId；未指定且 WXREAD_BOOK_URL 为空时循环个人书架")
     parser.add_argument("--read-num", type=int, help="本次真实等待周期数（1–600），默认 READ_NUM")
     args = parser.parse_args()
     raise SystemExit(main(args.check_auth, args.book_url, args.read_num))

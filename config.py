@@ -2,7 +2,6 @@
 import os
 import shlex
 
-from book_context import DEFAULT_BOOK_URL
 from login_store import load_login, login_path
 from weread_auth import USER_AGENT
 
@@ -11,7 +10,7 @@ try:
     READ_NUM = int(os.getenv("READ_NUM") or 40)
 except ValueError as exc:
     raise RuntimeError("READ_NUM 必须填写正整数，例如 40 或 120。") from exc
-BOOK_URL = os.getenv("WXREAD_BOOK_URL") or DEFAULT_BOOK_URL
+BOOK_URL = (os.getenv("WXREAD_BOOK_URL") or "").strip()
 PUSH_METHOD = os.getenv("PUSH_METHOD")
 PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

@@ -13,10 +13,12 @@ class WorkflowTests(unittest.TestCase):
         self.login = yaml.load((ROOT / ".github/workflows/login.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
     def test_cloud_login_has_no_public_password_or_otp_input(self):
-        self.assertEqual(set(self.login["on"]["workflow_dispatch"]["inputs"]), {"resume_run_id"})
+        self.assertEqual(self.login["on"]["workflow_dispatch"], {})
         environment = self.login["jobs"]["login"]["env"]
         self.assertEqual(environment["WXREAD_QR_PASSWORD"], "${{ secrets.WXREAD_QR_PASSWORD }}")
-        self.assertEqual(self.login["permissions"], {"contents": "read", "actions": "read"})
+        self.assertEqual(self.login["permissions"], {"contents": "read"})
+        self.assertNotIn("WXREAD_LOGIN_OTP", (ROOT / ".github/workflows/login.yml").read_text(encoding="utf-8"))
+        self.assertNotIn("resume_run_id", (ROOT / ".github/workflows/login.yml").read_text(encoding="utf-8"))
 
     def test_login_and_reading_share_non_cancelling_session_lock(self):
         self.assertEqual(self.login["concurrency"], self.reading["concurrency"])
@@ -24,12 +26,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.login["jobs"]["login"]["environment"], "AutoRead")
         self.assertEqual(self.reading["jobs"]["deploy"]["environment"], "AutoRead")
 
-    def test_public_artifacts_only_include_encrypted_session_and_viewer(self):
+    def test_public_artifact_only_includes_encrypted_viewer(self):
         steps = self.login["jobs"]["login"]["steps"]
         uploads = [step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@")]
-        self.assertEqual(len(uploads), 2)
+        self.assertEqual(len(uploads), 1)
         for step in uploads:
-            self.assertEqual(step["with"]["path"].splitlines(), [".state/qr-public/login.html", ".state/qr-public/session.enc"])
+            self.assertEqual(step["with"]["path"].splitlines(), [".state/qr-public/login.html"])
             self.assertEqual(step["with"]["retention-days"], "1")
             self.assertNotIn("login.key", step["with"]["path"])
         self.assertLess(next(i for i, item in enumerate(steps) if item.get("id") == "qr"),

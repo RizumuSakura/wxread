@@ -79,9 +79,9 @@ class QRLogin:
             raise RuntimeError("微信读书没有返回有效二维码，请重新尝试。")
         return uid
 
-    def poll(self, uid, otp=""):
+    def poll(self, uid):
         try:
-            return self._get_json("/api/auth/getLoginInfo", {"uid": uid, "otp": otp}, timeout=(5, 8))
+            return self._get_json("/api/auth/getLoginInfo", {"uid": uid, "otp": ""}, timeout=(5, 8))
         except RuntimeError as exc:
             if isinstance(exc.__cause__, requests.RequestException):
                 return {"pending": True}

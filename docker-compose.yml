@@ -9,7 +9,8 @@ services:
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       READ_NUM: ${READ_NUM:-40}
-      WXREAD_BOOK_URL: ${WXREAD_BOOK_URL:-https://weread.qq.com/web/reader/8b9329607186dc198b9bdab}
+      WXREAD_BOOK_URL: ${WXREAD_BOOK_URL:-}
+      WEREAD_API_KEY: ${WEREAD_API_KEY:-}
       WXREAD_QR_PASSWORD: ${WXREAD_QR_PASSWORD:-}
       WXREAD_REPOSITORY: ${WXREAD_REPOSITORY:-RizumuSakura/wxread}
       CRON_SCHEDULE: ${CRON_SCHEDULE:-0 1 * * *}

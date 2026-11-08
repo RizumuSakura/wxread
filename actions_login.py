@@ -16,7 +16,7 @@ from weread_auth import QRLogin, device_fingerprint, qr_png
 
 
 PUBLIC_DIR = Path(".state/qr-public")
-PENDING_FILE = PUBLIC_DIR / "session.enc"
+PENDING_FILE = Path(".state/qr-session.enc")
 
 
 def output(name, value):
@@ -108,39 +108,28 @@ def write_viewer(uid, state):
     atomic_private_write(PUBLIC_DIR / "login.html", html.encode())
 
 
-def prepare(timeout=600, resume_run_id=""):
+def prepare(timeout=600):
     password()
     if not 1 <= timeout <= 600:
         raise RuntimeError("二维码等待上限必须在 1–600 秒之间。")
     run_id = os.getenv("GITHUB_RUN_ID", "0")
     client = None
     try:
-        if resume_run_id:
-            if not re.fullmatch(r"[0-9]+", resume_run_id):
-                raise RuntimeError("resume_run_id 必须是原工作流的数字运行 ID。")
-            state = read_pending()
-            if str(state["run_id"]) != resume_run_id:
-                raise RuntimeError("附件与指定运行 ID 不匹配，未继续扫码。")
-            state["run_id"] = run_id
-            client = QRLogin(state["fingerprint"])
-            restore_cookies(client, state["cookies"])
-        else:
-            login = load_login()
-            expected_vid = os.getenv("WXREAD_ACCOUNT_VID", "") or (login["cookies"]["wr_vid"] if login else "")
-            if expected_vid and not re.fullmatch(r"[0-9]+", expected_vid):
-                raise RuntimeError("预期账号标识无效。")
-            fingerprint = device_fingerprint()
-            client = QRLogin(fingerprint)
-            uid = client.begin()
-            created = int(time.time())
-            state = {"version": 1, "repository": repository_scope(), "run_id": run_id, "uid": uid,
-                     "fingerprint": fingerprint, "expected_vid": expected_vid,
-                     "created_at": created, "expires_at": created + timeout}
+        login = load_login()
+        expected_vid = os.getenv("WXREAD_ACCOUNT_VID", "") or (login["cookies"]["wr_vid"] if login else "")
+        if expected_vid and not re.fullmatch(r"[0-9]+", expected_vid):
+            raise RuntimeError("预期账号标识无效。")
+        fingerprint = device_fingerprint()
+        client = QRLogin(fingerprint)
+        uid = client.begin()
+        created = int(time.time())
+        state = {"version": 1, "repository": repository_scope(), "run_id": run_id, "uid": uid,
+                 "fingerprint": fingerprint, "expected_vid": expected_vid,
+                 "created_at": created, "expires_at": created + timeout}
         save_pending(state, client)
         write_viewer(state["uid"], state)
         summary("### 扫码登录\n请下载本次运行的 `wxread-login-qr` 附件，解压后用浏览器打开 `login.html`，输入二维码查看口令并用微信扫码。\n"
-                "二维码和会话附件均已加密，不会公开登录 UID、Cookie 或验证码。请在手机确认后返回此页查看结果。\n"
-                "若要求验证码，请按 README 设置 `WXREAD_LOGIN_OTP`，再以本次数字运行 ID 续接。")
+                "扫码后返回此页，确认 **Save cloud login state** 成功。")
         print("加密二维码查看页已生成；上传附件后将等待手机确认。", flush=True)
         return state
     finally:
@@ -157,12 +146,9 @@ def wait_for_login():
     try:
         restore_cookies(client, state["cookies"])
         deadline = time.monotonic() + min(600, state["expires_at"] - time.time())
-        available_otp = os.getenv("WXREAD_LOGIN_OTP", "")
-        otp, attempted_otp = "", False
         print("等待微信扫码及手机确认；不会执行阅读。", flush=True)
         while time.monotonic() < deadline:
-            result = client.poll(state["uid"], otp)
-            otp = ""
+            result = client.poll(state["uid"])
             if result.get("succeed") is True:
                 if state["expected_vid"] and str(result.get("webLoginVid")) != state["expected_vid"]:
                     raise RuntimeError("扫码账号与既有账号不一致，拒绝替换；请使用原微信读书账号。")
@@ -176,26 +162,15 @@ def wait_for_login():
                 print("手机已确认，账号校验通过；云端登录状态已加密保存，等待缓存上传。", flush=True)
                 return 0
             code = result.get("logicCode", "")
-            if code in ("NEED_OTP", "OTP_NOT_MATCH"):
-                if code == "NEED_OTP" and not attempted_otp and re.fullmatch(r"[0-9]{4}", available_otp):
-                    otp, attempted_otp = available_otp, True
-                    continue
-                save_pending(state, client)
-                output("needs_otp", "true")
-                summary("### 需要手机验证码\n请将手机显示的四位验证码保存为 `AutoRead` 环境 Secret **WXREAD_LOGIN_OTP**；\n"
-                        "然后重新触发“扫码登录”，`resume_run_id` 填 **" + state["run_id"] + "**。\n"
-                        "请在原二维码有效期内完成；不要填入公开工作流输入，完成后可删除该一次性 Secret。")
-                print("需要手机验证码；已加密保留本次会话。请按任务摘要续接，未替换原登录。", flush=True)
-                return 2
-            if code in ("LOGIN_TIMEOUT", "OTP_EXPIRED"):
-                raise RuntimeError("二维码或验证码已过期，请重新触发生成新的二维码。")
+            if code == "LOGIN_TIMEOUT":
+                raise RuntimeError("二维码已过期，请重新触发生成新的二维码。")
             if code not in ("", "WAIT", "WAITING", "SCANNED", "WAIT_SCAN", "WAIT_CONFIRM"):
                 raise RuntimeError("微信读书未接受本次扫码，请重新触发。")
             time.sleep(0.5)
-        save_pending(state, client)
         raise RuntimeError("等待扫码超时，原登录状态未替换；需要时重新触发。")
     finally:
         client.close()
+        PENDING_FILE.unlink(missing_ok=True)
 
 
 def main(argv=None):
@@ -205,7 +180,6 @@ def main(argv=None):
     cache.add_argument("--require-cloud", action="store_true")
     create = sub.add_parser("prepare")
     create.add_argument("--timeout", type=int, default=600)
-    create.add_argument("--resume-run-id", default="")
     sub.add_parser("wait")
     args = parser.parse_args(argv)
     try:
@@ -214,7 +188,7 @@ def main(argv=None):
         if args.command == "cache-key":
             cache_metadata(args.require_cloud)
         elif args.command == "prepare":
-            prepare(args.timeout, args.resume_run_id)
+            prepare(args.timeout)
         else:
             return wait_for_login()
         return 0

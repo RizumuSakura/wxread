@@ -13,7 +13,7 @@ import requests
 import actions_login
 from cloud_crypto import cache_prefix, decrypt, encrypt
 from cookie_store import CookieStore
-from login_store import load_login, save_login
+from login_store import load_login, save_login, reading_cursor, save_reading_cursor
 
 
 LOGIN = {"version": 1, "cookies": {"wr_vid": "123456789", "wr_skey": "session-private-value", "wr_rt": "refresh-private-value"},
@@ -30,10 +30,10 @@ class CloudLoginTests(unittest.TestCase):
         environment = {"WXREAD_LOGIN_FILE": str(self.private), "WXREAD_COOKIE_FILE": str(self.root / "cookies.enc"),
                        "WXREAD_LOGIN_JSON": "", "WXREAD_CURL_BASH": "", "WXREAD_QR_PASSWORD": "a-long-random-test-password-123456",
                        "GITHUB_REPOSITORY": "owner/repository", "GITHUB_RUN_ID": "101", "GITHUB_RUN_ATTEMPT": "1",
-                       "GITHUB_REF_NAME": "main", "GITHUB_ACTIONS": "true", "WXREAD_LOGIN_OTP": "", "WXREAD_ACCOUNT_VID": "",
+                       "GITHUB_REF_NAME": "main", "GITHUB_ACTIONS": "true", "WXREAD_ACCOUNT_VID": "",
                        "GITHUB_OUTPUT": str(self.root / "output"), "GITHUB_STEP_SUMMARY": str(self.root / "summary")}
         for patcher in (patch.dict(os.environ, environment), patch.object(actions_login, "PUBLIC_DIR", self.public),
-                        patch.object(actions_login, "PENDING_FILE", self.public / "session.enc")):
+                        patch.object(actions_login, "PENDING_FILE", self.root / "private-session.enc")):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.clients = []
@@ -98,6 +98,7 @@ class CloudLoginTests(unittest.TestCase):
         self.assertIn("crypto.subtle", html)
         self.assertIn("connect-src 'none'", html)
         self.assertNotIn("__QR_ENVELOPE__", html)
+        self.assertEqual({item.name for item in self.public.iterdir()}, {"login.html"})
         self.assertFalse(self.private.exists())
 
     def test_confirmed_login_saves_encrypted_vault_and_cookie_state(self):
@@ -112,7 +113,7 @@ class CloudLoginTests(unittest.TestCase):
             self.assertEqual(actions_login.wait_for_login(), 0)
         self.assertEqual(load_login()["cookies"], LOGIN["cookies"])
         self.assertIsNotNone(CookieStore(LOGIN["cookies"]).load())
-        self.assertFalse((self.public / "session.enc").exists())
+        self.assertFalse(actions_login.PENDING_FILE.exists())
         self.assertIn("authenticated=true", (self.root / "output").read_text())
 
     def test_wrong_scanned_account_does_not_replace_existing_login(self):
@@ -127,41 +128,42 @@ class CloudLoginTests(unittest.TestCase):
         client.complete.assert_not_called()
         self.assertEqual(self.private.read_bytes(), previous)
 
-    def test_otp_requirement_preserves_old_login_and_encrypted_pending_state(self):
+    def test_unexpected_auth_challenge_stops_without_replacing_old_login(self):
         save_login(LOGIN)
         previous = self.private.read_bytes()
         actions_login.prepare()
         client = Mock()
         client.http.cookies = self.clients[0].http.cookies.copy()
         client.poll.return_value = {"logicCode": "NEED_OTP"}
-        with patch.object(actions_login, "QRLogin", return_value=client):
-            self.assertEqual(actions_login.wait_for_login(), 2)
+        with patch.object(actions_login, "QRLogin", return_value=client), self.assertRaises(RuntimeError):
+            actions_login.wait_for_login()
         self.assertEqual(self.private.read_bytes(), previous)
-        self.assertIn("uid", actions_login.read_pending())
-        self.assertIn("needs_otp=true", (self.root / "output").read_text())
+        self.assertFalse(actions_login.PENDING_FILE.exists())
+        self.assertNotIn("needs_otp", (self.root / "output").read_text())
 
-    def test_otp_is_taken_from_secret_not_from_public_arguments(self):
+    def test_pending_login_cannot_be_used_by_another_run(self):
         actions_login.prepare()
-        client = Mock()
-        client.http.cookies = self.clients[0].http.cookies.copy()
-        client.poll.side_effect = [{"logicCode": "NEED_OTP"}, {"succeed": True, "webLoginVid": 123456789}]
-        client.complete.return_value = LOGIN
-        with patch.dict(os.environ, {"WXREAD_LOGIN_OTP": "1234"}), patch.object(actions_login, "QRLogin", return_value=client):
-            self.assertEqual(actions_login.wait_for_login(), 0)
-        self.assertEqual(client.poll.call_args_list[1].args[1], "1234")
+        with patch.dict(os.environ, {"GITHUB_RUN_ID": "102"}), self.assertRaises(RuntimeError):
+            actions_login.wait_for_login()
 
-    def test_resume_is_bound_to_original_run_and_expiry(self):
-        actions_login.prepare()
-        with patch.dict(os.environ, {"GITHUB_RUN_ID": "102"}):
-            state = actions_login.prepare(resume_run_id="101")
-            self.assertEqual(state["run_id"], "102")
-            with self.assertRaises(RuntimeError):
-                actions_login.prepare(resume_run_id="999")
-
-    def test_expired_state_cannot_be_resumed(self):
+    def test_expired_state_cannot_be_polled(self):
         state = actions_login.prepare()
         with patch("actions_login.time.time", return_value=state["expires_at"] + 1), self.assertRaises(RuntimeError):
             actions_login.read_pending()
+
+    def test_shelf_cursor_does_not_change_cookie_cache_seed(self):
+        save_login(LOGIN)
+        jar = requests.cookies.RequestsCookieJar()
+        for name, value in LOGIN["cookies"].items():
+            jar.set(name, value, domain=".weread.qq.com", path="/")
+        original_store = CookieStore(LOGIN["cookies"])
+        original_store.save(jar)
+        self.assertTrue(save_reading_cursor("25615385"))
+        self.assertEqual(reading_cursor(), "25615385")
+        updated = load_login()
+        restored_store = CookieStore(updated["cookies"])
+        self.assertEqual(restored_store.cache_id, original_store.cache_id)
+        self.assertEqual(restored_store.load().get("wr_skey"), LOGIN["cookies"]["wr_skey"])
 
     def test_command_line_does_not_allow_local_qr_login(self):
         output = io.StringIO()

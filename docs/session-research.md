@@ -1,45 +1,35 @@
-# 云端登录与固定书籍协议核查
+# 协议与验证记录
 
-核查日期：2026-11-08。本文区分实际观察、代码行为与仍需真实账号确认的效果；不承诺 Cookie 永久有效或服务端一定认可计时。
+核查日期：2026-11-08。
 
-## 云端扫码设计
+## 认证与书架
 
-- 本地扫码 CLI 已移除，登录接口和轮询在 GitHub Runner 执行。
-- 公开附件只包含加密二维码网页、加密待处理会话，不包含明文 Cookie、登录 UID、验证码或口令。
-- 口令放在 AutoRead 环境 Secret，PBKDF2-SHA256（600000 次）派生 AES-256-GCM 密钥，随机盐与 nonce 随密文保存。
-- 登录状态、二维码、待处理会话使用不同用途标识和认证附加数据，绑定仓库；待处理会话还校验运行 ID 与有效期。
-- 浏览器查看页只负责解密显示，不连接服务器。手机验证码通过 Environment Secret 和第二次手动运行续接，不使用公开输入。
-- 登录与阅读工作流共用非自动取消的并发组以及缓存命名空间。最新状态由加密缓存承载，不需要工作流写回 Secrets 或新增 GitHub PAT。
-- 已有的登录文件、初始 Secret 和旧 Cookie 缓存仍可兼容迁移；云端成功登录优先于旧初始凭据。
+- 云端扫码取得网页 Cookie，用于网页阅读与续期；官方 Skill API Key 只用于读取个人书架。
+- 官方文档：[SKILL.md](https://github.com/Tencent/WeChatReading/blob/main/skills/SKILL.md)、[shelf.md](https://github.com/Tencent/WeChatReading/blob/main/skills/shelf.md)。当前接入版本为 1.0.5，仅调用 /shelf/sync。
+- 接口通过 Bearer Key 自动识别账号，不传 vid；请求参数和 skill_version 平铺在 body 顶层。遇到 upgrade_info 立即停止。
+- books 是电子书条目，albums 是听书专辑，mp 是文章收藏入口。本项目只选可网页阅读的 books，不把专辑或文章收藏当作电子书。
+- 循环模式不输出书名和 bookId，避免在公开 Actions 日志暴露私密书架。下一本的 ID 加密保存在现有登录文件中，不改变 Cookie 缓存的加密种子或缓存路径。
+- 四位验证码与跨运行续接已移除；二维码附件只包含加密查看网页，待登录会话只留在本次 Runner。
 
-## 目标书籍与章节
+## 阅读器上下文
 
-用户提供的[阅读器链接](https://weread.qq.com/web/reader/8b9329607186dc198b9bdab)对应《被讨厌的勇气：“自我启发之父”阿德勒的哲学课》，数字 bookId 为 25615385。
+解析页面的 bookInfo、progress、currentChapter、psvts 和 token，并核对该书章节目录。书籍、章节和位置必须一致。
 
-实际读取该页面后，从 window.__INITIAL_STATE__ 的 reader 状态取得 bookInfo、progress、currentChapter、psvts 和 token；再请求该 bookId 的章节目录。程序核对 URL 与 bookId 的编码对应关系，章节只能从同一本书的目录中选取。上下文缺失或不一致即停止，不以其他书籍、静态模板或虚构位置补齐。
+官方网页脚本：[9.625560b7.js](https://cdn.weread.qq.com/web/wrwebnjlogic/js/9.625560b7.js)。
 
-`pclts` 是例外：官方脚本在 SSR 初始状态将它设为 `0`，浏览器挂载时通过 `UPDATE_READER_PAGE_CLIENT_TIMESTAMP` 传入当前 Unix 秒数，再执行同一 ID 编码。程序相应初始化客户端时间，不把 SSR 的 `0` 当作缺失认证字段；服务端 `psvts` 和 token 仍必须真实存在。此前过严的检查在云端首次计时测试中造成提前停止，已据此修正并增加回归用例。
+pclts 在 SSR 默认是 0，由浏览器挂载时把当前 Unix 秒数编码后初始化；它不是必须由服务端返回的认证字段。程序按此初始化客户端时间，仍要求真实服务端 psvts 和 token。
 
-当次只读验证取得该书 chapterUid=172、chapterIdx=15；这是账号当时的当前位置，不是写死给所有运行的章节。
+进入书籍的请求不预支计时。每段用单调时钟实际等待约 30 秒后提交，失败重建会话重新计时，不回填失败时间或伪造翻页。
 
-## 请求与计时
+## 已完成的验证
 
-公开阅读器脚本的当次版本：[9.625560b7.js](https://cdn.weread.qq.com/web/wrwebnjlogic/js/9.625560b7.js)。
+| 项目 | 结果 |
+| --- | --- |
+| [云端扫码](https://github.com/RizumuSakura/wxread/actions/runs/42433489629) | 账号校验与加密缓存保存成功 |
+| [跨任务恢复与续期](https://github.com/RizumuSakura/wxread/actions/runs/42433975502) | 恢复扫码运行的缓存并成功续期 |
+| [指定书籍 30 秒](https://github.com/RizumuSakura/wxread/actions/runs/42434410299) | bookId=25615385，实际等待一段，返回成功与 synckey |
+| 官方书架接口 | 使用既有授权 Key 读取成功，已核对条目类型 |
 
-核对到进入书籍与周期报告使用 /web/book/read：
-- 进入请求携带同一书籍、章节、索引、位置、页面会话和签名，不预支计时字段。
-- 周期请求额外携带真实等待秒数 rt、时间戳 ts、随机数 rn 和基于页面 token 的 sg，再计算 s。
-- 请求字段按键排序并使用 JavaScript encodeURIComponent 对应的转义；appId 使用当前登录请求头的 User-Agent 派生。
-- 使用单调时钟测量间隔，先等约 30 秒才发送第一段；一段最多申报观察到的 30 秒。
-- 失败后重建会话会重新开始计时，不回填、加速或重复累计失败时间。
-- 不自动伪造翻页位置、不跳过内容付费权限、不通过随机换书规避服务端计时规则。
+以上接口确认不代表排行榜或客户端一定认可相同秒数；数周有效性与服务端累计口径未验证。书架循环的顺序、总周期数、游标续读、空书架处理和私密信息保护另有自动化测试。
 
-本次已在获授权账号上执行该书的一段实际 30 秒验证：请求成功并返回 synckey，进程退出码为 0。该证据证明本次固定书籍请求被接口确认，**不能据此认定客户端或活动榜单一定增加了相同秒数**。
-
-## 验证边界
-
-模拟测试覆盖：二维码加密、口令/仓库/用途绑定、账号不匹配拒绝、验证码续接、超时保留旧状态、Cookie 轮换回滚、固定书籍与章节校验、第一段真实等待、请求签名、工作流并发与附件白名单。
-
-本轮[云端真人扫码](https://github.com/RizumuSakura/wxread/actions/runs/42433489629)已成功，账号校验与加密缓存保存通过；[独立续期检查](https://github.com/RizumuSakura/wxread/actions/runs/42433975502)从该扫码运行的缓存恢复并成功续期。长期有效性、客户端累计时长和排行榜口径仍需另行观察。不会重新加入独立查询产品入口作为替代。
-
-会话研究参考：[finlater/weread.koplugin](https://github.com/finlater/weread.koplugin) 的扫码和会话维护；它是第三方 KOReader 插件，不是腾讯官方产品。
+会话维护参考：[finlater/weread.koplugin](https://github.com/finlater/weread.koplugin)。

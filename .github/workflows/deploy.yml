@@ -1,5 +1,5 @@
 name: wxread
-run-name: ${{ inputs.check_auth && '仅验证登录续期' || '指定书籍阅读' }}
+run-name: ${{ inputs.check_auth && '仅验证登录续期' || '书架循环 / 指定书籍' }}
 
 on:
   schedule:
@@ -12,7 +12,7 @@ on:
         type: boolean
         default: false
       book_url:
-        description: 本次书籍链接或数字 bookId；留空使用仓库 WXREAD_BOOK_URL，未配置则默认《被讨厌的勇气》
+        description: 本次书籍链接或数字 bookId；与 WXREAD_BOOK_URL 都留空时循环个人书架
         type: string
         default: ''
       read_num:
@@ -74,10 +74,11 @@ jobs:
           key: ${{ steps.cache.outputs.legacy_cache_prefix }}${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ${{ steps.cache.outputs.legacy_cache_prefix }}
 
-      - name: Run fixed-book task or renewal-only check
+      - name: Run reading task or renewal-only check
         timeout-minutes: 330
         env:
           WXREAD_BOOK_URL: ${{ inputs.book_url || vars.WXREAD_BOOK_URL }}
+          WEREAD_API_KEY: ${{ secrets.WEREAD_API_KEY }}
           READ_NUM: ${{ inputs.read_num || vars.READ_NUM }}
           WXREAD_CHECK_AUTH: ${{ inputs.check_auth }}
           WXREAD_SKIP_PUSH: ${{ inputs.skip_push }}

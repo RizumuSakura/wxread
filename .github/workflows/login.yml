@@ -1,19 +1,12 @@
 name: 扫码登录
-run-name: 微信读书扫码登录 / ${{ inputs.resume_run_id || '新二维码' }}
+run-name: 微信读书扫码登录
 
 on:
-  workflow_dispatch:
-    inputs:
-      resume_run_id:
-        description: 首次留空；手机要求验证码时，设置 WXREAD_LOGIN_OTP Secret 后填原运行的数字 ID
-        type: string
-        default: ''
+  workflow_dispatch: {}
 
 permissions:
   contents: read
-  actions: read
 
-# Share the credential-rotation lock with the reading workflow.
 concurrency:
   group: wxread-session-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: false
@@ -54,30 +47,16 @@ jobs:
           key: ${{ steps.cache.outputs.cache_key }}
           restore-keys: ${{ steps.cache.outputs.cache_prefix }}
 
-      - name: Download pending QR session for OTP continuation
-        if: inputs.resume_run_id != ''
-        uses: actions/download-artifact@v8
-        with:
-          name: wxread-login-qr
-          path: .state/qr-public
-          run-id: ${{ inputs.resume_run_id }}
-          repository: ${{ github.repository }}
-          github-token: ${{ github.token }}
-
       - name: Generate encrypted QR viewer
         id: prepare
-        env:
-          RESUME_RUN_ID: ${{ inputs.resume_run_id }}
-        run: python actions_login.py prepare --resume-run-id "$RESUME_RUN_ID"
+        run: python actions_login.py prepare
 
       - name: Publish encrypted QR viewer
         id: qr
         uses: actions/upload-artifact@v7
         with:
           name: wxread-login-qr
-          path: |
-            .state/qr-public/login.html
-            .state/qr-public/session.enc
+          path: .state/qr-public/login.html
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
@@ -90,13 +69,11 @@ jobs:
           python - <<'PY'
           import os
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
-              stream.write('\n[下载加密二维码附件](' + os.environ['QR_ARTIFACT_URL'] + ')\n')
+              stream.write('\n[下载二维码附件](' + os.environ['QR_ARTIFACT_URL'] + ')\n')
           PY
 
-      - name: Wait for phone confirmation
+      - name: Wait for QR login
         id: wait
-        env:
-          WXREAD_LOGIN_OTP: ${{ secrets.WXREAD_LOGIN_OTP }}
         run: python actions_login.py wait
 
       - name: Save cloud login state
@@ -108,28 +85,3 @@ jobs:
             .state/cookies.enc
             .state/device.json
           key: ${{ steps.cache.outputs.cache_key }}
-
-      - name: Update encrypted QR artifact
-        id: latest-qr
-        if: ${{ always() && steps.prepare.outcome == 'success' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: wxread-login-qr
-          path: |
-            .state/qr-public/login.html
-            .state/qr-public/session.enc
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 1
-          overwrite: true
-
-      - name: Link latest encrypted artifact
-        if: ${{ always() && steps.latest-qr.outcome == 'success' }}
-        env:
-          QR_ARTIFACT_URL: ${{ steps.latest-qr.outputs.artifact-url }}
-        run: |
-          python - <<'PY'
-          import os
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
-              stream.write('\n[下载最新加密附件（续接验证码请使用此版本）](' + os.environ['QR_ARTIFACT_URL'] + ')\n')
-          PY

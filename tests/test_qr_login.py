@@ -89,12 +89,12 @@ class QRProtocolTests(unittest.TestCase):
         self.client = QRLogin("1234567890", session=self.http)
 
     def test_begin_and_poll_use_the_same_device_cookie(self):
-        self.http.get.side_effect = [reply({}), reply({"uid": "session-uid"}), reply({"logicCode": "NEED_OTP"})]
+        self.http.get.side_effect = [reply({}), reply({"uid": "session-uid"}), reply({"logicCode": "WAIT_SCAN"})]
         uid = self.client.begin()
-        result = self.client.poll(uid, "1234")
-        self.assertEqual(result["logicCode"], "NEED_OTP")
+        result = self.client.poll(uid)
+        self.assertEqual(result["logicCode"], "WAIT_SCAN")
         self.assertEqual(self.http.cookies.get("wr_fp"), "1234567890")
-        self.assertEqual(self.http.get.call_args.kwargs["params"], {"uid": "session-uid", "otp": "1234"})
+        self.assertEqual(self.http.get.call_args.kwargs["params"], {"uid": "session-uid", "otp": ""})
         self.assertFalse(self.http.get.call_args.kwargs["allow_redirects"])
 
     def test_network_timeout_is_pending_until_the_outer_deadline(self):

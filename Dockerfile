@@ -10,7 +10,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 ENV PATH="/usr/local/bin:${PATH}"
 
 # 复制项目文件
-COPY main.py push.py config.py log_utils.py scheduler.py cookie_store.py weread_session.py login_store.py weread_auth.py cloud_crypto.py book_context.py reader_protocol.py actions_login.py qr_viewer.html requirements.txt ./
+COPY main.py push.py config.py log_utils.py scheduler.py cookie_store.py weread_session.py login_store.py weread_auth.py weread_shelf.py cloud_crypto.py book_context.py reader_protocol.py actions_login.py qr_viewer.html requirements.txt ./
 
 # 安装 Python 依赖
 RUN python -m pip install --no-cache-dir -r requirements.txt

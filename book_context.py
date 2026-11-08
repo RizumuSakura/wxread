@@ -12,6 +12,10 @@ DEFAULT_BOOK_URL = "https://weread.qq.com/web/reader/8b9329607186dc198b9bdab"
 CATALOG_URL = "https://weread.qq.com/web/book/chapterInfos"
 
 
+class BookUnavailableError(RuntimeError):
+    """A known unavailable book can be skipped in shelf mode."""
+
+
 def reader_url(reference):
     value = str(reference).strip()
     if value.isascii() and value.isdigit():
@@ -57,10 +61,10 @@ def load_context(client, reference):
         state, _ = json.JSONDecoder().raw_decode(response.text[marker.end():])
         reader = state["reader"]
         if reader.get("isBookInfoError") or reader.get("isBookForbidden"):
-            raise ValueError("book unavailable")
+            raise BookUnavailableError("该书当前不可在网页阅读。")
         info = reader["bookInfo"]
         book_id = str(info["bookId"])
-        if not book_id.isascii() or not book_id.isdigit():
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", book_id):
             raise ValueError("invalid book ID")
         if urlsplit(url).path.split("/")[-1].split("k", 1)[0] != encode_id(book_id):
             raise ValueError("book ID mismatch")
@@ -79,6 +83,8 @@ def load_context(client, reference):
     catalog.raise_for_status()
     try:
         records = catalog.json()
+        if isinstance(records, dict) and records.get("errCode", records.get("errcode")) not in (None, 0, "0"):
+            raise RuntimeError("目标书籍目录接口返回错误，停止本次任务。")
         if isinstance(records, dict) and "data" in records:
             records = records["data"]
         records = [records] if isinstance(records, dict) else records
@@ -97,5 +103,7 @@ def load_context(client, reference):
                            int(chapter["chapterUid"]), int(chapter.get("chapterIdx") or 0), offset, percent, summary,
                            ps, pc,
                            app_id(client.http.headers.get("User-Agent", "")), reader["token"])
-    except (ValueError, KeyError, TypeError, AttributeError, StopIteration) as exc:
+    except StopIteration as exc:
+        raise BookUnavailableError("该书没有可用于网页阅读的章节。") from exc
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise RuntimeError("无法取得目标书籍的有效章节，未使用其他书籍或旧模板代替。") from exc

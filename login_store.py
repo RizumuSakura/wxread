@@ -47,11 +47,14 @@ def validate_login(value):
         raise RuntimeError("登录请求头格式无效。")
     headers = {k.lower(): v for k, v in headers.items()
                if k.lower() in {"user-agent", "accept", "accept-language", "referer", "origin"}}
-    # Read legacy login files/secrets unchanged; no feature retrieves or uses this metadata now.
+    # Keep existing login files compatible; the shelf client may reuse an existing key.
     api_key = value.get("api_key", "")
     if not isinstance(api_key, str):
         raise RuntimeError("官方 API Key 格式无效。")
-    return {"version": 1, "cookies": dict(cookies), "headers": headers, "api_key": api_key}
+    cursor = value.get("reading_cursor", "")
+    if not isinstance(cursor, str) or len(cursor) > 128:
+        raise RuntimeError("书架阅读游标格式无效。")
+    return {"version": 1, "cookies": dict(cookies), "headers": headers, "api_key": api_key, "reading_cursor": cursor}
 
 
 def load_login():
@@ -122,3 +125,18 @@ def current_login():
     if cached is not None:
         value["cookies"] = {cookie.name: cookie.value for cookie in cached}
     return validate_login(value)
+
+
+def reading_cursor():
+    login = load_login()
+    return login.get("reading_cursor", "") if login else ""
+
+
+def save_reading_cursor(book_id):
+    login = load_login()
+    if login is None:
+        return False
+    # Preserve the initial cookie seed: cookies.enc is encrypted against it.
+    login["reading_cursor"] = str(book_id)
+    save_login(login)
+    return True
