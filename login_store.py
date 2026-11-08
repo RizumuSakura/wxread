@@ -1,5 +1,6 @@
 """Local encrypted QR credentials and the equivalent GitHub Secret bootstrap."""
 import json
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -63,9 +64,14 @@ def validate_login(value):
                 or not isinstance(pending.get("book_id"), str)
                 or reader_url(pending.get("reference", "")).rsplit("/", 1)[-1].split("k", 1)[0] != encode_id(pending["book_id"])
                 or not isinstance(pending.get("app_id"), str)
-                or not isinstance(pending.get("last_write"), (int, float))):
+                or isinstance(pending.get("last_write"), bool)
+                or not isinstance(pending.get("last_write"), (int, float))
+                or (isinstance(pending["last_write"], float) and not math.isfinite(pending["last_write"]))
+                or pending["last_write"] < 0):
             raise RuntimeError("进度恢复记录无效，停止以免覆盖阅读进度。")
         saved_position(pending.get("position"))
+        if pending.get("restore_from") is not None:
+            saved_position(pending["restore_from"])
     return {"version": 1, "cookies": dict(cookies), "headers": headers, "api_key": api_key,
             "reading_cursor": cursor, "pending_progress": pending}
 

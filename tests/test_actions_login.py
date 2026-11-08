@@ -201,8 +201,10 @@ class CloudLoginTests(unittest.TestCase):
         record = {"version": 1, "owner": LOGIN["cookies"]["wr_vid"], "book_id": "25615385",
                   "reference": DEFAULT_BOOK_URL, "app_id": "web-test", "last_write": 1000,
                   "position": {"chapterUid": 172, "chapterOffset": 389, "progress": 45}}
-        for mutation in ({"owner": "999"}, {"book_id": "101"}, {"reference": "https://evil.example"}):
-            with self.assertRaises(RuntimeError):
+        for mutation in ({"owner": "999"}, {"book_id": "101"}, {"reference": "https://evil.example"},
+                         *({"last_write": value} for value in (True, -1, float("nan"), float("inf"), "1000")),
+                         {"restore_from": {}}, {"restore_from": {**record["position"], "progress": float("nan")}}):
+            with self.subTest(mutation=mutation), self.assertRaises(RuntimeError):
                 save_login({**LOGIN, "pending_progress": {**record, **mutation}})
 
     def test_command_line_does_not_allow_local_qr_login(self):

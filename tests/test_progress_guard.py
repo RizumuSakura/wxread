@@ -83,14 +83,35 @@ class ProgressGuardTests(unittest.TestCase):
         self.assertEqual(load.call_args.kwargs["position"], self.position)
         self.assertIsNone(self.pending)
 
-    def test_old_or_unknown_writer_is_not_rolled_back(self):
-        for app, updated in (("", 1000), ("web-script", 100), ("phone", 1000)):
+    def test_old_or_unknown_writer_is_not_rolled_back_or_discarded(self):
+        for app, updated in (("", 1000), ("web-script", 100), ("web-script", float("nan")),
+                             ("web-script", float("inf")), ("web-script", True), ("web-script", "1000")):
             self.pending = None
             self.server = deepcopy(self.position)
-            with self.assertRaises(pg.ProgressConflict):
+            with self.assertRaises(pg.ProgressUncertain):
                 with self.guard():
                     self.server.update(chapterOffset=1, appId=app, updateTime=updated)
+            self.assertIsNotNone(self.pending)
         self.writer.assert_not_called()
+
+    def test_write_attribution_window_has_fixed_inclusive_boundaries(self):
+        for updated in (998, 1060):
+            self.pending = None
+            self.server = deepcopy(self.position)
+            self.guard().__enter__()
+            self.server.update(chapterOffset=390, appId="web-script", updateTime=updated)
+            self.writer.side_effect = lambda *args: setattr(self, "server", deepcopy(self.position))
+            with patch("progress_guard.time.time", return_value=2000), patch("progress_guard.load_context", return_value=Mock()):
+                pg.recover_pending(self.client, self.writer)
+            self.assertIsNone(self.pending)
+        for updated in (997.9, 1060.1):
+            self.pending = None
+            self.server = deepcopy(self.position)
+            self.guard().__enter__()
+            self.server.update(chapterOffset=390, appId="web-script", updateTime=updated)
+            with patch("progress_guard.time.time", return_value=2000), self.assertRaises(pg.ProgressUncertain):
+                pg.recover_pending(self.client, self.writer)
+            self.assertIsNotNone(self.pending)
 
     def test_failed_restore_keeps_journal_and_stops(self):
         with patch("progress_guard.load_context", return_value=Mock()), self.assertRaisesRegex(RuntimeError, "保留恢复记录"):
@@ -136,6 +157,75 @@ class ProgressGuardTests(unittest.TestCase):
             pg.recover_pending(self.client, self.writer)
         self.writer.assert_not_called()
         self.assertEqual(self.server["chapterOffset"], 900)
+
+    def test_later_same_browser_progress_is_not_attributed_to_old_run(self):
+        self.guard().__enter__()
+        self.server.update(chapterOffset=900, appId="web-script", updateTime=9999)
+        self.writer.side_effect = lambda *args: setattr(self, "server", deepcopy(self.position))
+        with patch("progress_guard.time.time", return_value=10000), \
+             patch("progress_guard.load_context", return_value=Mock()), \
+             self.assertRaisesRegex(RuntimeError, "保留恢复记录"):
+            pg.recover_pending(self.client, self.writer)
+        self.writer.assert_not_called()
+        self.assertEqual(self.server["chapterOffset"], 900)
+        self.assertIsNotNone(self.pending)
+
+    def test_same_browser_drift_before_next_write_restores_then_stops(self):
+        self.writer.side_effect = lambda *args: setattr(self, "server", deepcopy(self.position))
+        with patch("progress_guard.load_context", return_value=Mock()), self.assertRaises(RuntimeError):
+            with self.guard() as guard:
+                guard.before_write()
+                self.server.update(chapterOffset=390, appId="web-script", updateTime=1000)
+                guard.before_write()
+        self.writer.assert_called_once()
+        self.assertEqual(self.server, self.position)
+        self.assertIsNone(self.pending)
+
+    def test_restore_intent_is_checkpointed_and_cannot_write_if_upload_fails(self):
+        with patch("progress_guard.load_context", return_value=Mock()), self.assertRaisesRegex(RuntimeError, "保留恢复记录"):
+            with self.guard():
+                self.server.update(chapterOffset=390, appId="web-script", updateTime=1000)
+                self.checkpoint_mock.side_effect = RuntimeError("upload failed")
+        self.writer.assert_not_called()
+        self.assertIsNotNone(self.pending)
+
+    def test_failed_restore_records_fresh_write_time_for_retry(self):
+        self.guard().__enter__()
+        self.server.update(chapterOffset=390, appId="web-script", updateTime=1000)
+        with patch("progress_guard.load_context", return_value=Mock()), patch("progress_guard.time.time", return_value=2000), \
+             self.assertRaisesRegex(RuntimeError, "保留恢复记录"):
+            pg.recover_pending(self.client, self.writer)
+        self.assertEqual(self.pending["last_write"], 2000)
+
+    def test_same_browser_change_during_restore_checkpoint_keeps_journal(self):
+        self.guard().__enter__()
+        self.server.update(chapterOffset=390, appId="web-script", updateTime=1000)
+        def changed():
+            self.server.update(chapterOffset=450, updateTime=1001)
+        self.checkpoint_mock.side_effect = changed
+        with patch("progress_guard.load_context", return_value=Mock()), self.assertRaises(pg.ProgressUncertain):
+            pg.recover_pending(self.client, self.writer)
+        self.writer.assert_not_called()
+        self.assertIsNotNone(self.pending)
+        self.assertEqual(self.server["chapterOffset"], 450)
+
+    def test_changed_restore_candidate_is_not_claimed_by_refreshed_timestamp_on_retry(self):
+        self.guard().__enter__()
+        self.server.update(chapterOffset=390, appId="web-script", updateTime=1000)
+        def changed():
+            self.server.update(chapterOffset=450, updateTime=2001)
+        self.checkpoint_mock.side_effect = changed
+        with patch("progress_guard.load_context", return_value=Mock()), patch("progress_guard.time.time", return_value=2000), \
+             self.assertRaises(pg.ProgressUncertain):
+            pg.recover_pending(self.client, self.writer)
+        self.checkpoint_mock.side_effect = None
+        self.writer.side_effect = lambda *args: setattr(self, "server", deepcopy(self.position))
+        with patch("progress_guard.load_context", return_value=Mock()), patch("progress_guard.time.time", return_value=2002), \
+             self.assertRaises(pg.ProgressUncertain):
+            pg.recover_pending(self.client, self.writer)
+        self.writer.assert_not_called()
+        self.assertEqual(self.server["chapterOffset"], 450)
+        self.assertIsNotNone(self.pending)
 
     def test_missing_position_fields_and_invalid_numbers_are_not_guessed(self):
         for progress in ({}, {**self.position, "progress": float("nan")},
