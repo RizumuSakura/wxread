@@ -11,7 +11,7 @@ from requests.cookies import create_cookie
 
 from cloud_crypto import cache_prefix, decrypt, encrypt, password, repository_scope
 from cookie_store import CookieStore
-from login_store import atomic_private_write, load_login, login_path, save_login
+from login_store import atomic_private_write, load_login, login_path, save_login, preserve_metadata
 from weread_auth import QRLogin, device_fingerprint, qr_png
 
 
@@ -152,7 +152,7 @@ def wait_for_login():
             if result.get("succeed") is True:
                 if state["expected_vid"] and str(result.get("webLoginVid")) != state["expected_vid"]:
                     raise RuntimeError("扫码账号与既有账号不一致，拒绝替换；请使用原微信读书账号。")
-                login = client.complete(result)
+                login = preserve_metadata(client.complete(result), load_login())
                 save_login(login)
                 CookieStore(login["cookies"]).save(client.http.cookies)
                 output("authenticated", "true")

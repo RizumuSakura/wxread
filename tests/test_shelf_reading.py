@@ -93,11 +93,34 @@ class PrivateBookLoggingTests(unittest.TestCase):
         reply._content = b'{"succ":1,"synckey":1}'
         client.post.return_value = reply
         printer = Mock()
-        with patch("main.load_context", return_value=context), patch("main.enter_book"), patch("main.wait_interval"), \
+        with patch("main.load_context", return_value=context), patch("main.ProgressGuard"), patch("main.enter_book"), patch("main.wait_interval"), \
              patch("main.time.monotonic", side_effect=[0, 30, 30]), patch("main.logging.info") as info:
             main.run_single_book(client, printer, "101", 1, refresh_session=False, disclose=False, expected_book_id="101")
-        info.assert_not_called()
-        printer.assert_not_called()
+        self.assertNotIn(context.title, str(info.call_args_list) + str(printer.call_args_list))
+        self.assertIn("私密书籍", str(printer.call_args_list))
+
+    def test_title_cannot_inject_newlines_or_workflow_commands(self):
+        self.assertEqual(main.safe_label("Title\n::error::\x1b[31m"), "Title ::error:: [31m")
+
+    def test_public_book_has_shelf_index_and_title(self):
+        snapshot = ShelfSnapshot([ShelfBook("101", "101", "Public title", False)], 1, 0, 0, 0)
+        with patch("main.BOOK_URL", ""), patch("main.load_shelf", return_value=snapshot), \
+             patch("main.reading_cursor", return_value=""), patch("main.save_reading_cursor"), patch("main.refresh_cookie"), \
+             patch("main.run_single_book", return_value=main.ReadingResult("101", "Public title", 1, 30)) as read:
+            with self.assertLogs(level="INFO") as logs:
+                main.run_reading(Mock(), Mock(), count=1)
+        self.assertIn("[1/1]《Public title》", "\n".join(logs.output))
+        self.assertTrue(read.call_args.kwargs["disclose"])
+
+    def test_progress_conflict_does_not_advance_shelf_cursor(self):
+        from progress_guard import ProgressConflict
+        snapshot = ShelfSnapshot([ShelfBook("101", "101")], 1, 0, 0, 0)
+        with patch("main.BOOK_URL", ""), patch("main.load_shelf", return_value=snapshot), \
+             patch("main.reading_cursor", return_value=""), patch("main.save_reading_cursor") as cursor, \
+             patch("main.refresh_cookie"), patch("main.run_single_book", side_effect=ProgressConflict("phone")):
+            with self.assertRaises(ProgressConflict):
+                main.run_reading(Mock(), Mock(), count=1)
+        cursor.assert_not_called()
 
 
 if __name__ == "__main__":

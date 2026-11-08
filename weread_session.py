@@ -114,9 +114,9 @@ class WeReadSession:
             self._persist()
         return response
 
-    def get(self, url):
+    def get(self, url, headers=None):
         try:
-            response = self.http.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=False)
+            response = self.http.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=False, **({"headers": headers} if headers else {}))
         except requests.RequestException:
             self._persist()
             raise

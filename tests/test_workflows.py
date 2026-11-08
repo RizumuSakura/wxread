@@ -52,6 +52,24 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("login.key", save["with"]["path"])
         self.assertIn(".state/login.enc", save["with"]["path"])
 
+    def test_reading_runtime_action_can_checkpoint_without_a_pat(self):
+        steps = self.reading["jobs"]["deploy"]["steps"]
+        reading = next(item for item in steps if item.get("uses") == "./.github/actions/reading")
+        self.assertIn("cache_prefix", reading["env"]["WXREAD_CACHE_PREFIX"])
+        self.assertNotIn("GITHUB_TOKEN", reading["env"])
+        self.assertTrue(any("npm ci --ignore-scripts" in item.get("run", "") for item in steps))
+        action = yaml.load((ROOT / ".github/actions/reading/action.yml").read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual(action["runs"]["using"], "node24")
+
+    def test_checkpoint_cache_paths_match_existing_restore_version(self):
+        expected = [".state/login.enc", ".state/cookies.enc", ".state/device.json"]
+        for definition in (self.login, self.reading):
+            for item in definition["jobs"]["login" if definition is self.login else "deploy"]["steps"]:
+                if item.get("uses", "").startswith("actions/cache/") and ".state/login.enc" in item["with"]["path"]:
+                    self.assertEqual(item["with"]["path"].splitlines(), expected)
+        script = (ROOT / ".github/actions/reading/checkpoint.mjs").read_text()
+        self.assertIn(repr(expected), script)
+
 
 if __name__ == "__main__":
     unittest.main()

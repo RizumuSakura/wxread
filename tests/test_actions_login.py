@@ -13,7 +13,7 @@ import requests
 import actions_login
 from cloud_crypto import cache_prefix, decrypt, encrypt
 from cookie_store import CookieStore
-from login_store import load_login, save_login, reading_cursor, save_reading_cursor
+from login_store import load_login, save_login, reading_cursor, save_reading_cursor, save_pending_progress, pending_progress, preserve_metadata
 
 
 LOGIN = {"version": 1, "cookies": {"wr_vid": "123456789", "wr_skey": "session-private-value", "wr_rt": "refresh-private-value"},
@@ -164,6 +164,46 @@ class CloudLoginTests(unittest.TestCase):
         restored_store = CookieStore(updated["cookies"])
         self.assertEqual(restored_store.cache_id, original_store.cache_id)
         self.assertEqual(restored_store.load().get("wr_skey"), LOGIN["cookies"]["wr_skey"])
+
+    def test_progress_journal_is_encrypted_and_preserves_cookie_seed(self):
+        from book_context import DEFAULT_BOOK_URL
+        save_login(LOGIN)
+        original_id = CookieStore(LOGIN["cookies"]).cache_id
+        record = {"version": 1, "owner": LOGIN["cookies"]["wr_vid"], "book_id": "25615385",
+                  "reference": DEFAULT_BOOK_URL, "app_id": "web-test", "last_write": 1000,
+                  "position": {"chapterUid": 172, "chapterOffset": 389, "progress": 45.1234}}
+        save_pending_progress(record)
+        self.assertEqual(pending_progress(), record)
+        self.assertNotIn(b"chapterOffset", self.private.read_bytes())
+        self.assertEqual(CookieStore(load_login()["cookies"]).cache_id, original_id)
+        save_reading_cursor("101")
+        self.assertEqual(pending_progress(), record)
+        save_pending_progress(None)
+        self.assertIsNone(pending_progress())
+        self.assertEqual(reading_cursor(), "101")
+
+    def test_relogin_keeps_same_account_cursor_journal_and_api_key(self):
+        previous = {**LOGIN, "reading_cursor": "101", "pending_progress": {"pending": True}, "api_key": "wrk-existing"}
+        renewed = {**LOGIN, "cookies": {**LOGIN["cookies"], "wr_skey": "new-session"}}
+        value = preserve_metadata(renewed, previous)
+        for field in ("reading_cursor", "pending_progress", "api_key"):
+            self.assertEqual(value[field], previous[field])
+        self.assertEqual(value["cookies"]["wr_skey"], "new-session")
+        self.assertNotIn("pending_progress", renewed)
+
+    def test_relogin_cannot_transfer_journal_to_another_account(self):
+        other = {**LOGIN, "cookies": {**LOGIN["cookies"], "wr_vid": "999"}}
+        with self.assertRaises(RuntimeError):
+            preserve_metadata(other, LOGIN)
+
+    def test_invalid_journal_cannot_belong_to_other_book_or_account(self):
+        from book_context import DEFAULT_BOOK_URL
+        record = {"version": 1, "owner": LOGIN["cookies"]["wr_vid"], "book_id": "25615385",
+                  "reference": DEFAULT_BOOK_URL, "app_id": "web-test", "last_write": 1000,
+                  "position": {"chapterUid": 172, "chapterOffset": 389, "progress": 45}}
+        for mutation in ({"owner": "999"}, {"book_id": "101"}, {"reference": "https://evil.example"}):
+            with self.assertRaises(RuntimeError):
+                save_login({**LOGIN, "pending_progress": {**record, **mutation}})
 
     def test_command_line_does_not_allow_local_qr_login(self):
         output = io.StringIO()

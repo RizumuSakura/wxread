@@ -14,6 +14,9 @@ def setup_logging(width=120):
 
     def refresh_print(message):
         nonlocal active
+        if not sys.stdout.isatty():
+            print(message, flush=True)
+            return
         active = True
         print(f"\r{message:<{width}}", end="", flush=True)
 

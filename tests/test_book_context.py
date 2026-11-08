@@ -51,11 +51,31 @@ class BookContextTests(unittest.TestCase):
         self.assertNotIn("rt", payload)
         self.assertNotIn("sg", payload)
 
-    def test_unknown_chapter_uses_first_real_chapter_of_same_book(self):
+    def test_unknown_chapter_is_rejected_without_falling_back_to_first(self):
         self.reader["progress"]["book"]["chapterUid"] = 888
         self.reader["currentChapter"]["chapterUid"] = 888
+        with self.assertRaisesRegex(RuntimeError, "原始阅读章节"):
+            load_context(self.client(), DEFAULT_BOOK_URL)
+
+    def test_fractional_progress_is_preserved_in_snapshot_and_payload(self):
+        self.reader["progress"]["book"]["progress"] = 45.1234
         context = load_context(self.client(), DEFAULT_BOOK_URL)
-        self.assertEqual((context.chapter_uid, context.offset, context.progress), (172, 0, 0))
+        self.assertEqual(context.original["progress"], 45.1234)
+        self.assertEqual(context.position(1)["pr"], 45.1234)
+
+    def test_no_saved_position_is_rejected_before_catalog(self):
+        self.reader["progress"] = {}
+        client = self.client()
+        with self.assertRaises(RuntimeError):
+            load_context(client, DEFAULT_BOOK_URL)
+        client.post.assert_not_called()
+
+    def test_restore_uses_original_position_with_fresh_page_session(self):
+        old = {**self.reader["progress"]["book"], "chapterOffset": 123, "progress": 12.34}
+        context = load_context(self.client(), DEFAULT_BOOK_URL, position=old)
+        self.assertEqual((context.offset, context.progress), (123, 12.34))
+        self.assertEqual(context.ps, "page-session")
+        self.assertEqual(context.original["chapterOffset"], 389)
 
     def test_mismatched_book_is_rejected_before_catalog(self):
         self.reader["bookInfo"]["bookId"] = "999"
@@ -124,6 +144,9 @@ class EncodingTests(unittest.TestCase):
 
     def test_hash_empty_vector(self):
         self.assertEqual(cal_hash(""), "2a0a2a0a")
+
+    def test_integer_valued_float_serializes_like_javascript_number(self):
+        self.assertEqual(encode_data({"pr": 45.0}), "pr=45")
 
     def test_application_id_uses_current_user_agent(self):
         self.assertNotEqual(app_id("first browser"), app_id("second browser"))

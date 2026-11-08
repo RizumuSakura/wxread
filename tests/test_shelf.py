@@ -46,7 +46,14 @@ class OfficialShelfTests(unittest.TestCase):
                               "albums": [{"albumInfo": {"albumId": "3"}}], "mp": {"enabled": True}})
         self.assertEqual((snapshot.ebook_entries, snapshot.albums, snapshot.article_collection), (3, 1, 1))
         self.assertEqual([item.book_id for item in snapshot.books], ["1", "2"])
-        self.assertFalse(hasattr(snapshot.books[0], "title"))
+        self.assertEqual(snapshot.books[0].title, "private")
+        self.assertTrue(snapshot.books[0].private)
+        self.assertTrue(snapshot.books[1].private)  # Unknown visibility is private.
+
+    def test_explicit_public_flag_allows_title_logging(self):
+        snapshot = self.load({"books": [{"bookId": "1", "secret": 0, "title": "public title"}]})
+        self.assertFalse(snapshot.books[0].private)
+        self.assertEqual(snapshot.books[0].title, "public title")
 
     def test_reader_link_tracking_parameters_are_not_forwarded(self):
         snapshot = self.load({"books": [{"bookId": "25615385", "readerLink": DEFAULT_BOOK_URL + "?from=shelf#fragment"}]})

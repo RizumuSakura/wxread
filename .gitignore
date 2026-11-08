@@ -16,3 +16,4 @@ logs/
 state/
 .test-deps/
 .venv/
+node_modules/

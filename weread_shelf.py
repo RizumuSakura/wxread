@@ -19,6 +19,8 @@ SKILL_VERSION = "1.0.5"
 class ShelfBook:
     book_id: str
     reference: str
+    title: str = ""
+    private: bool = True
 
 
 @dataclass
@@ -105,7 +107,8 @@ def load_shelf(session=None):
                 continue
             if book_id not in seen:
                 seen.add(book_id)
-                selected.append(ShelfBook(book_id, reference))
+                selected.append(ShelfBook(book_id, reference, str(record.get("title") or ""),
+                                          record.get("secret") not in (0, "0")))
         if not selected:
             raise RuntimeError("个人书架没有可用于网页阅读的电子书；可在 book_url 指定书籍。")
         return ShelfSnapshot(selected, len(records), len(albums), int(bool(data.get("mp"))), unsupported)

@@ -54,7 +54,20 @@ def validate_login(value):
     cursor = value.get("reading_cursor", "")
     if not isinstance(cursor, str) or len(cursor) > 128:
         raise RuntimeError("书架阅读游标格式无效。")
-    return {"version": 1, "cookies": dict(cookies), "headers": headers, "api_key": api_key, "reading_cursor": cursor}
+    pending = value.get("pending_progress")
+    if pending is not None:
+        from book_context import reader_url, saved_position
+        from reader_protocol import encode_id
+        if (not isinstance(pending, dict) or pending.get("version") != 1
+                or pending.get("owner") != cookies["wr_vid"]
+                or not isinstance(pending.get("book_id"), str)
+                or reader_url(pending.get("reference", "")).rsplit("/", 1)[-1].split("k", 1)[0] != encode_id(pending["book_id"])
+                or not isinstance(pending.get("app_id"), str)
+                or not isinstance(pending.get("last_write"), (int, float))):
+            raise RuntimeError("进度恢复记录无效，停止以免覆盖阅读进度。")
+        saved_position(pending.get("position"))
+    return {"version": 1, "cookies": dict(cookies), "headers": headers, "api_key": api_key,
+            "reading_cursor": cursor, "pending_progress": pending}
 
 
 def load_login():
@@ -140,3 +153,26 @@ def save_reading_cursor(book_id):
     login["reading_cursor"] = str(book_id)
     save_login(login)
     return True
+
+
+def pending_progress():
+    login = load_login()
+    return login.get("pending_progress") if login else None
+
+
+def save_pending_progress(pending):
+    login = load_login()
+    if login is None:
+        raise RuntimeError("无法保存进度恢复记录，请先扫码登录。")
+    login["pending_progress"] = pending
+    save_login(login)
+
+
+def preserve_metadata(new_login, previous):
+    if previous:
+        if new_login["cookies"]["wr_vid"] != previous["cookies"]["wr_vid"]:
+            raise RuntimeError("扫码账号不一致，未覆盖原始进度恢复记录。")
+        new_login = dict(new_login)
+        for key in ("reading_cursor", "pending_progress", "api_key"):
+            new_login[key] = previous.get(key, "" if key != "pending_progress" else None)
+    return new_login

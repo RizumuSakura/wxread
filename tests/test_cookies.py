@@ -259,6 +259,8 @@ class ReadingTests(unittest.TestCase):
         def advance(seconds):
             self.clock += seconds
         for target, options in (("main.load_context", {"return_value": self.context}),
+                                ("main.ProgressGuard", {}),
+                                ("main.recover_pending", {}),
                                 ("main.BOOK_URL", {"new": self.context.url}),
                                 ("main.enter_book", {}),
                                 ("main.time.monotonic", {"side_effect": lambda: self.clock}),

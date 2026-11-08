@@ -24,6 +24,8 @@ def encode_data(payload):
     def string(value):
         if isinstance(value, bool):
             return str(value).lower()
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
         return "null" if value is None else str(value)
     return "&".join(f"{key}={quote(string(payload[key]), safe=JS_URI_SAFE)}" for key in sorted(payload) if key != "s")
 

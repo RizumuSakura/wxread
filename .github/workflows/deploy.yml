@@ -51,6 +51,12 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install official cache SDK
+        run: npm ci --ignore-scripts --prefix .github/actions/reading
 
       - name: Prepare encrypted session cache
         id: cache
@@ -75,6 +81,7 @@ jobs:
           restore-keys: ${{ steps.cache.outputs.legacy_cache_prefix }}
 
       - name: Run reading task or renewal-only check
+        uses: ./.github/actions/reading
         timeout-minutes: 330
         env:
           WXREAD_BOOK_URL: ${{ inputs.book_url || vars.WXREAD_BOOK_URL }}
@@ -88,15 +95,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SERVERCHAN_SPT: ${{ secrets.SERVERCHAN_SPT }}
-        run: |
-          if [ "$WXREAD_SKIP_PUSH" = "true" ]; then
-            export PUSH_METHOD=''
-          fi
-          if [ "$WXREAD_CHECK_AUTH" = "true" ]; then
-            python main.py --check-auth
-          else
-            python main.py
-          fi
+          WXREAD_CACHE_PREFIX: ${{ steps.cache.outputs.cache_prefix }}
+          WXREAD_SHOW_PRIVATE_TITLES: ${{ vars.WXREAD_SHOW_PRIVATE_TITLES }}
 
       - name: Save updated encrypted session state
         if: ${{ always() && steps.cache.outcome == 'success' && hashFiles('.state/cookies.enc') != '' }}
