@@ -16,7 +16,9 @@
 
 用户提供的[阅读器链接](https://weread.qq.com/web/reader/8b9329607186dc198b9bdab)对应《被讨厌的勇气：“自我启发之父”阿德勒的哲学课》，数字 bookId 为 25615385。
 
-实际读取该页面后，从 window.__INITIAL_STATE__ 的 reader 状态取得 bookInfo、progress、currentChapter、psvts、pclts 和 token；再请求该 bookId 的章节目录。程序核对 URL 与 bookId 的编码对应关系，章节只能从同一本书的目录中选取。上下文缺失或不一致即停止，不以其他书籍、静态模板或虚构位置补齐。
+实际读取该页面后，从 window.__INITIAL_STATE__ 的 reader 状态取得 bookInfo、progress、currentChapter、psvts 和 token；再请求该 bookId 的章节目录。程序核对 URL 与 bookId 的编码对应关系，章节只能从同一本书的目录中选取。上下文缺失或不一致即停止，不以其他书籍、静态模板或虚构位置补齐。
+
+`pclts` 是例外：官方脚本在 SSR 初始状态将它设为 `0`，浏览器挂载时通过 `UPDATE_READER_PAGE_CLIENT_TIMESTAMP` 传入当前 Unix 秒数，再执行同一 ID 编码。程序相应初始化客户端时间，不把 SSR 的 `0` 当作缺失认证字段；服务端 `psvts` 和 token 仍必须真实存在。此前过严的检查在云端首次计时测试中造成提前停止，已据此修正并增加回归用例。
 
 当次只读验证取得该书 chapterUid=172、chapterIdx=15；这是账号当时的当前位置，不是写死给所有运行的章节。
 
@@ -38,6 +40,6 @@
 
 模拟测试覆盖：二维码加密、口令/仓库/用途绑定、账号不匹配拒绝、验证码续接、超时保留旧状态、Cookie 轮换回滚、固定书籍与章节校验、第一段真实等待、请求签名、工作流并发与附件白名单。
 
-真人扫码、云端缓存后续恢复需由手机确认并检查实际工作流结果；文档中的使用流程不等于每次账号都已完成验证。长期有效性、客户端累计时长和排行榜口径需另行观察。不会重新加入独立查询产品入口作为替代。
+本轮[云端真人扫码](https://github.com/RizumuSakura/wxread/actions/runs/42433489629)已成功，账号校验与加密缓存保存通过；[独立续期检查](https://github.com/RizumuSakura/wxread/actions/runs/42433975502)从该扫码运行的缓存恢复并成功续期。长期有效性、客户端累计时长和排行榜口径仍需另行观察。不会重新加入独立查询产品入口作为替代。
 
 会话研究参考：[finlater/weread.koplugin](https://github.com/finlater/weread.koplugin) 的扫码和会话维护；它是第三方 KOReader 插件，不是腾讯官方产品。

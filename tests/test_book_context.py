@@ -1,6 +1,6 @@
 import json
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import requests
 
@@ -68,6 +68,23 @@ class BookContextTests(unittest.TestCase):
         self.reader.pop("token")
         with self.assertRaises(RuntimeError):
             load_context(self.client(), DEFAULT_BOOK_URL)
+
+    def test_client_clock_is_initialized_like_browser_mount_not_required_in_ssr(self):
+        for server_value in (0, None, "", "old-client-clock"):
+            self.reader["pclts"] = server_value
+            with patch("book_context.time.time", return_value=1794090000.75):
+                context = load_context(self.client(), DEFAULT_BOOK_URL)
+            self.assertEqual(context.pc, encode_id(1794090000))
+        self.reader.pop("pclts")
+        with patch("book_context.time.time", return_value=1794090000):
+            self.assertEqual(load_context(self.client(), DEFAULT_BOOK_URL).pc, encode_id(1794090000))
+
+    def test_server_page_session_is_still_required(self):
+        self.reader["psvts"] = ""
+        client = self.client()
+        with self.assertRaises(RuntimeError):
+            load_context(client, DEFAULT_BOOK_URL)
+        client.post.assert_not_called()
 
     def test_missing_target_catalog_is_not_replaced_with_another_book(self):
         self.catalog = self.catalog[:1]

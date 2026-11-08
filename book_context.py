@@ -1,6 +1,7 @@
 """Resolve one book and its own chapter/position from the logged-in reader."""
 import json
 import re
+import time
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -67,9 +68,11 @@ def load_context(client, reference):
         progress = progress.get("book", progress)
         current = reader.get("currentChapter") or {}
         ps = reader["psvts"]
-        if (not isinstance(ps, str) or not ps or not isinstance(reader.get("pclts"), str) or not reader["pclts"]
-                or not isinstance(reader.get("token"), str) or not reader["token"]):
+        if (not isinstance(ps, str) or not ps or not isinstance(reader.get("token"), str) or not reader["token"]):
             raise ValueError("missing page session")
+        # The official reader sets pclts on mount from Date.now()/1000. SSR
+        # legitimately starts it at 0; this is client time, not a server secret.
+        pc = encode_id(int(time.time()))
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise RuntimeError("阅读器上下文缺失或与目标书籍不一致，未上报阅读时长。") from exc
     catalog = client.post(CATALOG_URL, {"bookIds": [book_id]})
@@ -92,7 +95,7 @@ def load_context(client, reference):
             summary = str(progress.get("summary") or "")
         return BookContext(book_id, str(info.get("title") or book_id), url,
                            int(chapter["chapterUid"]), int(chapter.get("chapterIdx") or 0), offset, percent, summary,
-                           ps, reader["pclts"],
+                           ps, pc,
                            app_id(client.http.headers.get("User-Agent", "")), reader["token"])
     except (ValueError, KeyError, TypeError, AttributeError, StopIteration) as exc:
         raise RuntimeError("无法取得目标书籍的有效章节，未使用其他书籍或旧模板代替。") from exc
