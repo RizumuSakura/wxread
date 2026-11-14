@@ -104,7 +104,7 @@ class QRLogin:
             raise RuntimeError("无法验证扫码账号，未保存新的登录状态。")
         cookies = {cookie.name: cookie.value for cookie in self.http.cookies
                    if cookie.domain.lstrip(".") == "weread.qq.com" and not cookie.is_expired()}
-        return {"version": 1, "cookies": cookies, "headers": {"user-agent": USER_AGENT, "referer": LOGIN_PAGE}, "api_key": ""}
+        return {"version": 1, "cookies": cookies, "headers": {"user-agent": USER_AGENT, "referer": LOGIN_PAGE}}
 
     def close(self):
         self.http.close()

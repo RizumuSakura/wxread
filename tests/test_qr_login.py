@@ -13,7 +13,7 @@ from weread_auth import QRLogin, qr_png, device_fingerprint
 
 
 LOGIN = {"version": 1, "cookies": {"wr_vid": "123456789", "wr_skey": "session-private-value", "wr_rt": "refresh-private-value"},
-         "headers": {"User-Agent": "test browser"}, "api_key": "wrk-test-private-value"}
+         "headers": {"User-Agent": "test browser"}}
 
 
 def reply(data, status=200):
@@ -37,9 +37,8 @@ class LoginStoreTests(unittest.TestCase):
         save_login(LOGIN)
         value = load_login()
         self.assertEqual(value["cookies"], LOGIN["cookies"])
-        self.assertEqual(value["api_key"], LOGIN["api_key"])
         encrypted = self.path.read_bytes()
-        for secret in (LOGIN["api_key"], *LOGIN["cookies"].values()):
+        for secret in LOGIN["cookies"].values():
             self.assertNotIn(secret.encode(), encrypted)
 
     def test_environment_bootstrap_overrides_local_login(self):
@@ -101,13 +100,12 @@ class QRProtocolTests(unittest.TestCase):
         self.http.get.side_effect = requests.ReadTimeout("waiting")
         self.assertEqual(self.client.poll("uid"), {"pending": True})
 
-    def test_complete_keeps_full_tokens_without_requesting_an_api_key(self):
+    def test_complete_keeps_full_tokens(self):
         self.http.get.return_value = reply({"name": "Test account", "vid": 123456789})
         login = self.client.complete({"succeed": True, "webLoginVid": 123456789, "accessToken": "complete-session-token", "refreshToken": "refresh/+="})
         self.assertEqual(login["cookies"]["wr_skey"], "complete-session-token")
         self.assertEqual(login["cookies"]["wr_rt"], "refresh%2F%2B%3D")
         self.assertEqual(login["cookies"]["wr_fp"], "1234567890")
-        self.assertEqual(login["api_key"], "")
         self.assertEqual(self.http.get.call_count, 1)
         self.assertEqual(self.http.get.call_args.args[0], "https://weread.qq.com/api/userInfo")
         self.assertEqual(self.http.get.call_args.kwargs["params"], {"userVid": "123456789"})
@@ -120,7 +118,6 @@ class QRProtocolTests(unittest.TestCase):
     def test_web_login_only_requires_account_validation(self):
         self.http.get.return_value = reply({"name": "Test account"})
         login = self.client.complete({"succeed": True, "webLoginVid": 123, "accessToken": "valid-session"})
-        self.assertEqual(login["api_key"], "")
         self.assertEqual(login["cookies"]["wr_skey"], "valid-session")
         self.assertEqual(self.http.get.call_count, 1)
 
@@ -134,7 +131,6 @@ class QRProtocolTests(unittest.TestCase):
         with patch("weread_auth.time.sleep"):
             login = self.client.complete({"succeed": True, "webLoginVid": 123, "accessToken": "valid-session"})
         self.assertEqual(login["cookies"]["wr_skey"], "valid-session")
-        self.assertEqual(login["api_key"], "")
         self.assertEqual(self.http.get.call_count, 2)
 
 

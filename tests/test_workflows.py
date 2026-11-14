@@ -52,14 +52,26 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("login.key", save["with"]["path"])
         self.assertIn(".state/login.enc", save["with"]["path"])
 
-    def test_reading_runtime_action_can_checkpoint_without_a_pat(self):
+    def test_reading_step_is_plain_python_without_a_node_cache_sdk(self):
         steps = self.reading["jobs"]["deploy"]["steps"]
-        reading = next(item for item in steps if item.get("uses") == "./.github/actions/reading")
-        self.assertIn("cache_prefix", reading["env"]["WXREAD_CACHE_PREFIX"])
+        reading = next(item for item in steps if item.get("name", "").startswith("Run reading task"))
+        self.assertIn("python main.py", reading["run"])
         self.assertNotIn("GITHUB_TOKEN", reading["env"])
-        self.assertTrue(any("npm ci --ignore-scripts" in item.get("run", "") for item in steps))
-        action = yaml.load((ROOT / ".github/actions/reading/action.yml").read_text(), Loader=yaml.BaseLoader)
-        self.assertEqual(action["runs"]["using"], "node24")
+        self.assertNotIn("WXREAD_CACHE_PREFIX", reading["env"])
+        self.assertFalse(any(item.get("uses", "").startswith("actions/setup-node@") for item in steps))
+        self.assertFalse(any("npm ci" in item.get("run", "") for item in steps))
+        self.assertFalse(any(item.get("uses", "").startswith("./.github/actions/") for item in steps))
+        self.assertFalse((ROOT / ".github/actions/reading").exists())
+
+    def test_schedule_is_pinned_for_a_late_github_queue(self):
+        self.assertEqual([item["cron"] for item in self.reading["on"]["schedule"]], ["7 13 * * *"])
+        self.assertEqual(self.reading["concurrency"]["group"], "wxread-session-${{ github.repository }}")
+
+    def test_cloud_login_migrates_the_v2_cache_without_a_password_derived_key(self):
+        steps = self.reading["jobs"]["deploy"]["steps"]
+        migrate = next(item for item in steps if item.get("name", "").startswith("Migrate the v2"))
+        self.assertEqual(migrate["with"]["restore-keys"], "${{ steps.cache.outputs.legacy_cache_prefix }}")
+        self.assertEqual(Path(ROOT / "actions_login.py").read_text(encoding="utf-8").count('legacy_prefix = "wxread-login-v2-"'), 1)
 
     def test_checkpoint_cache_paths_match_existing_restore_version(self):
         expected = [".state/login.enc", ".state/cookies.enc", ".state/device.json"]
@@ -67,8 +79,6 @@ class WorkflowTests(unittest.TestCase):
             for item in definition["jobs"]["login" if definition is self.login else "deploy"]["steps"]:
                 if item.get("uses", "").startswith("actions/cache/") and ".state/login.enc" in item["with"]["path"]:
                     self.assertEqual(item["with"]["path"].splitlines(), expected)
-        script = (ROOT / ".github/actions/reading/checkpoint.mjs").read_text()
-        self.assertIn(repr(expected), script)
 
 
 if __name__ == "__main__":

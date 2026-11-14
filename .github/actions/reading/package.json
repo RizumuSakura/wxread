@@ -1,7 +1,0 @@
-{
-  "name": "wxread-encrypted-checkpoint",
-  "private": true,
-  "type": "module",
-  "engines": { "node": ">=24" },
-  "dependencies": { "@actions/cache": "6.3.0" }
-}

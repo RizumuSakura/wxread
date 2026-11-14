@@ -260,8 +260,6 @@ class ReadingTests(unittest.TestCase):
         def advance(seconds):
             self.clock += seconds
         for target, options in (("main.load_context", {"return_value": self.context}),
-                                ("main.ProgressGuard", {}),
-                                ("main.recover_pending", {}),
                                 ("main.BOOK_URL", {"new": self.context.url}),
                                 ("main.enter_book", {}),
                                 ("main.time.monotonic", {"side_effect": lambda: self.clock}),
@@ -363,12 +361,28 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(self.load_context_mock.call_count, 2)
 
     def test_invalid_read_count_fails_before_network(self):
-        for count in (0, -1, 601, 1.5, True):
+        for count in (0, -1, 401, 1.5, True):
             client = Mock()
             with self.assertRaises(RuntimeError):
                 main.run_reading(client, Mock(), count=count)
             client.renew.assert_not_called()
             client.post.assert_not_called()
+
+    def test_transient_network_errors_are_retried_before_the_period_is_dropped(self):
+        client = Mock()
+        client.post.side_effect = [requests.ConnectionError("reset"),
+                                   requests.Timeout("slow"),
+                                   self.response({"succ": 1, "synckey": 1})]
+        result = main.run_reading(client, Mock(), count=1)
+        self.assertEqual(result.completed, 1)
+        self.assertEqual(client.post.call_count, 3)
+
+    def test_a_dead_read_endpoint_stops_after_the_network_failure_limit(self):
+        client = Mock()
+        client.post.side_effect = requests.ConnectionError("down")
+        with self.assertRaises(RuntimeError):
+            main.run_reading(client, Mock(), count=1)
+        self.assertEqual(client.post.call_count, main.NETWORK_RETRY_LIMIT * (main.NETWORK_FAILURE_LIMIT + 1))
 
     @patch("main.setup_logging", return_value=Mock())
     @patch("main.push")

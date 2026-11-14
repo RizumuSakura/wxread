@@ -1,5 +1,0 @@
-name: Protected reading
-description: Run Python with the Actions runtime cache credentials available to encrypted checkpoints
-runs:
-  using: node24
-  main: run.mjs

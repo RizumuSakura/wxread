@@ -1,10 +1,11 @@
 name: wxread
-run-name: ${{ inputs.check_auth && '仅验证登录续期' || '书架循环 / 指定书籍' }}
+run-name: ${{ inputs.check_auth && '仅验证登录续期' || '固定书籍阅读' }}
 
 on:
   schedule:
-    # 01:07 Asia/Shanghai, daily
-    - cron: '7 17 * * *'
+    # 21:07 Asia/Shanghai. GitHub 的 schedule 队列实测延迟 4–7.5 小时，
+    # 声明在这里是为了让任务落在凌晨 01:00–04:30（CST）而不是早上 6 点后。
+    - cron: '7 13 * * *'
   workflow_dispatch:
     inputs:
       check_auth:
@@ -12,11 +13,11 @@ on:
         type: boolean
         default: false
       book_url:
-        description: 本次书籍链接或数字 bookId；与 WXREAD_BOOK_URL 都留空时循环个人书架
+        description: 本次书籍链接或数字 bookId；留空则用 WXREAD_BOOK_URL，再留空默认《被讨厌的勇气》25615385
         type: string
         default: ''
       read_num:
-        description: 本次真实等待周期数（每段约 30 秒，1–600）；留空使用 READ_NUM，默认 40
+        description: 本次真实等待周期数（每段 30 秒，1–400）；留空用 READ_NUM，默认 240（约 2 小时）
         type: string
         default: ''
       skip_push:
@@ -28,7 +29,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: wxread-session-${{ github.repository }}-${{ github.ref }}
+  # 同一账号的扫码与阅读必须互斥，与触发分支无关。
+  group: wxread-session-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -51,12 +53,6 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          package-manager-cache: false
-      - name: Install official cache SDK
-        run: npm ci --ignore-scripts --prefix .github/actions/reading
 
       - name: Prepare encrypted session cache
         id: cache
@@ -72,20 +68,21 @@ jobs:
           key: ${{ steps.cache.outputs.cache_key }}
           restore-keys: ${{ steps.cache.outputs.cache_prefix }}
 
-      - name: Migrate latest legacy Cookie cache if needed
+      - name: Migrate the v2 encrypted login cache once
         if: ${{ steps.cache.outputs.mode == 'cloud' && steps.cache.outputs.legacy_cache_prefix != '' && hashFiles('.state/login.enc') == '' && hashFiles('.state/cookies.enc') == '' }}
         uses: actions/cache/restore@v6
         with:
-          path: .state/cookies.enc
+          path: |
+            .state/login.enc
+            .state/cookies.enc
+            .state/device.json
           key: ${{ steps.cache.outputs.legacy_cache_prefix }}${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ${{ steps.cache.outputs.legacy_cache_prefix }}
 
       - name: Run reading task or renewal-only check
-        uses: ./.github/actions/reading
         timeout-minutes: 330
         env:
           WXREAD_BOOK_URL: ${{ inputs.book_url || vars.WXREAD_BOOK_URL }}
-          WEREAD_API_KEY: ${{ secrets.WEREAD_API_KEY }}
           READ_NUM: ${{ inputs.read_num || vars.READ_NUM }}
           WXREAD_CHECK_AUTH: ${{ inputs.check_auth }}
           WXREAD_SKIP_PUSH: ${{ inputs.skip_push }}
@@ -95,8 +92,14 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SERVERCHAN_SPT: ${{ secrets.SERVERCHAN_SPT }}
-          WXREAD_CACHE_PREFIX: ${{ steps.cache.outputs.cache_prefix }}
-          WXREAD_SHOW_PRIVATE_TITLES: ${{ vars.WXREAD_SHOW_PRIVATE_TITLES }}
+        run: |
+          if [ "$WXREAD_SKIP_PUSH" = "true" ]; then
+            export PUSH_METHOD=""
+          fi
+          if [ "$WXREAD_CHECK_AUTH" = "true" ]; then
+            exec python main.py --check-auth
+          fi
+          exec python main.py
 
       - name: Save updated encrypted session state
         if: ${{ always() && steps.cache.outcome == 'success' && hashFiles('.state/cookies.enc') != '' }}

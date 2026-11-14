@@ -1,6 +1,5 @@
 """Local encrypted QR credentials and the equivalent GitHub Secret bootstrap."""
 import json
-import math
 import os
 import tempfile
 from pathlib import Path
@@ -48,32 +47,8 @@ def validate_login(value):
         raise RuntimeError("登录请求头格式无效。")
     headers = {k.lower(): v for k, v in headers.items()
                if k.lower() in {"user-agent", "accept", "accept-language", "referer", "origin"}}
-    # Keep existing login files compatible; the shelf client may reuse an existing key.
-    api_key = value.get("api_key", "")
-    if not isinstance(api_key, str):
-        raise RuntimeError("官方 API Key 格式无效。")
-    cursor = value.get("reading_cursor", "")
-    if not isinstance(cursor, str) or len(cursor) > 128:
-        raise RuntimeError("书架阅读游标格式无效。")
-    pending = value.get("pending_progress")
-    if pending is not None:
-        from book_context import reader_url, saved_position
-        from reader_protocol import encode_id
-        if (not isinstance(pending, dict) or pending.get("version") != 1
-                or pending.get("owner") != cookies["wr_vid"]
-                or not isinstance(pending.get("book_id"), str)
-                or reader_url(pending.get("reference", "")).rsplit("/", 1)[-1].split("k", 1)[0] != encode_id(pending["book_id"])
-                or not isinstance(pending.get("app_id"), str)
-                or isinstance(pending.get("last_write"), bool)
-                or not isinstance(pending.get("last_write"), (int, float))
-                or (isinstance(pending["last_write"], float) and not math.isfinite(pending["last_write"]))
-                or pending["last_write"] < 0):
-            raise RuntimeError("进度恢复记录无效，停止以免覆盖阅读进度。")
-        saved_position(pending.get("position"))
-        if pending.get("restore_from") is not None:
-            saved_position(pending["restore_from"])
-    return {"version": 1, "cookies": dict(cookies), "headers": headers, "api_key": api_key,
-            "reading_cursor": cursor, "pending_progress": pending}
+    # Legacy fields stay tolerated on read so older cache entries still decrypt.
+    return {"version": 1, "cookies": dict(cookies), "headers": headers}
 
 
 def load_login():
@@ -146,39 +121,8 @@ def current_login():
     return validate_login(value)
 
 
-def reading_cursor():
-    login = load_login()
-    return login.get("reading_cursor", "") if login else ""
-
-
-def save_reading_cursor(book_id):
-    login = load_login()
-    if login is None:
-        return False
-    # Preserve the initial cookie seed: cookies.enc is encrypted against it.
-    login["reading_cursor"] = str(book_id)
-    save_login(login)
-    return True
-
-
-def pending_progress():
-    login = load_login()
-    return login.get("pending_progress") if login else None
-
-
-def save_pending_progress(pending):
-    login = load_login()
-    if login is None:
-        raise RuntimeError("无法保存进度恢复记录，请先扫码登录。")
-    login["pending_progress"] = pending
-    save_login(login)
-
-
 def preserve_metadata(new_login, previous):
-    if previous:
-        if new_login["cookies"]["wr_vid"] != previous["cookies"]["wr_vid"]:
-            raise RuntimeError("扫码账号不一致，未覆盖原始进度恢复记录。")
-        new_login = dict(new_login)
-        for key in ("reading_cursor", "pending_progress", "api_key"):
-            new_login[key] = previous.get(key, "" if key != "pending_progress" else None)
+    """A re-login may only replace the credentials of the same account."""
+    if previous and new_login["cookies"]["wr_vid"] != previous["cookies"]["wr_vid"]:
+        raise RuntimeError("扫码账号不一致，未覆盖既有登录状态。")
     return new_login

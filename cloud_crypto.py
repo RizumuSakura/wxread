@@ -30,8 +30,15 @@ def repository_scope():
 
 
 def cache_prefix():
-    identity = hashlib.sha256(b"wxread-cloud-cache-v2\0" + repository_scope().encode() + b"\0" + password().encode()).hexdigest()
-    return "wxread-login-v2-" + identity
+    """Cache identity never contains password material.
+
+    The v2 prefix hashed the password into the key itself, which turned every
+    cache entry into a one-round offline oracle for the AutoRead password. The
+    key is now derived from the repository scope only; the password still
+    protects the payload through the AESGCM KDF.
+    """
+    identity = hashlib.sha256(b"wxread-cloud-cache-v3\0" + repository_scope().encode()).hexdigest()
+    return "wxread-login-v3-" + identity
 
 
 def _aad(purpose, scope):

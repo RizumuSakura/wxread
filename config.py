@@ -6,11 +6,14 @@ from login_store import load_login, login_path
 from weread_auth import USER_AGENT
 
 
+DEFAULT_BOOK_ID = "25615385"  # 《被讨厌的勇气》
+DEFAULT_READ_NUM = 240  # 240 x 30s = 7200s = 2h of confirmed reading per day
+
 try:
-    READ_NUM = int(os.getenv("READ_NUM") or 40)
+    READ_NUM = int(os.getenv("READ_NUM") or DEFAULT_READ_NUM)
 except ValueError as exc:
-    raise RuntimeError("READ_NUM 必须填写正整数，例如 40 或 120。") from exc
-BOOK_URL = (os.getenv("WXREAD_BOOK_URL") or "").strip()
+    raise RuntimeError("READ_NUM 必须填写正整数，例如 240（等于 2 小时）。") from exc
+BOOK_URL = (os.getenv("WXREAD_BOOK_URL") or DEFAULT_BOOK_ID).strip()
 PUSH_METHOD = os.getenv("PUSH_METHOD")
 PUSHPLUS_TOKEN = os.getenv("PUSHPLUS_TOKEN")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

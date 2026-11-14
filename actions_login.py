@@ -11,7 +11,7 @@ from requests.cookies import create_cookie
 
 from cloud_crypto import cache_prefix, decrypt, encrypt, password, repository_scope
 from cookie_store import CookieStore
-from login_store import atomic_private_write, load_login, login_path, save_login, preserve_metadata
+from login_store import atomic_private_write, load_login, save_login, preserve_metadata
 from weread_auth import QRLogin, device_fingerprint, qr_png
 
 
@@ -38,6 +38,10 @@ def cache_metadata(require_cloud=False):
     if os.getenv("WXREAD_QR_PASSWORD"):
         prefix = cache_prefix()
         mode = "cloud"
+        # v2 put the password hash into the cache key itself. Restore the newest
+        # v2 entry once so the upgrade needs no new QR scan; the payload is still
+        # AESGCM-protected, so a wrong password simply fails to decrypt.
+        legacy_prefix = "wxread-login-v2-"
     else:
         if require_cloud:
             password()
@@ -47,11 +51,6 @@ def cache_metadata(require_cloud=False):
         prefix = "wxread-cookie-v1-" + CookieStore(cookies).cache_id
         mode = "legacy"
     prefix += "-" + os.getenv("GITHUB_REF_NAME", "main") + "-"
-    if mode == "cloud" and (os.getenv("WXREAD_LOGIN_JSON") or os.getenv("WXREAD_CURL_BASH")):
-        # Migrate the last valid old cache rather than retrying a stale bootstrap.
-        from config import cookies
-        if cookies.get("wr_vid") and cookies.get("wr_skey"):
-            legacy_prefix = "wxread-cookie-v1-" + CookieStore(cookies).cache_id + "-" + os.getenv("GITHUB_REF_NAME", "main") + "-"
     key = prefix + os.getenv("GITHUB_RUN_ID", "local") + "-" + os.getenv("GITHUB_RUN_ATTEMPT", "1")
     for name, value in (("cache_prefix", prefix), ("cache_key", key), ("mode", mode), ("legacy_cache_prefix", legacy_prefix)):
         output(name, value)

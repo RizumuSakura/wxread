@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: wxread-session-${{ github.repository }}-${{ github.ref }}
+  group: wxread-session-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -46,6 +46,17 @@ jobs:
             .state/device.json
           key: ${{ steps.cache.outputs.cache_key }}
           restore-keys: ${{ steps.cache.outputs.cache_prefix }}
+
+      - name: Migrate the v2 encrypted login cache once
+        if: ${{ steps.cache.outputs.legacy_cache_prefix != '' && hashFiles('.state/login.enc') == '' && hashFiles('.state/cookies.enc') == '' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            .state/login.enc
+            .state/cookies.enc
+            .state/device.json
+          key: ${{ steps.cache.outputs.legacy_cache_prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ${{ steps.cache.outputs.legacy_cache_prefix }}
 
       - name: Generate encrypted QR viewer
         id: prepare

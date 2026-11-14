@@ -71,12 +71,12 @@ class BookContextTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(FrozenInstanceError):
                 setattr(context, field, value)
 
-    def test_position_contract_rejects_another_chapter_offset_or_percentage(self):
+    def test_payload_keeps_the_snapshot_position_and_never_advances(self):
         context = load_context(self.client(), DEFAULT_BOOK_URL)
-        context.require_position(context.original)
-        for change in ({"chapter_uid": 1}, {"offset": 0}, {"progress": 0}):
-            with self.subTest(change=change), self.assertRaisesRegex(RuntimeError, "原始阅读进度"):
-                replace(context, **change).require_position(context.original)
+        first = context.position(1700000000)
+        later = context.position(1700099999)
+        self.assertEqual((first["ci"], first["co"], first["pr"]), (15, 389, 45))
+        self.assertEqual((later["ci"], later["co"], later["pr"]), (15, 389, 45))
 
     def test_no_saved_position_is_rejected_before_catalog(self):
         self.reader["progress"] = {}

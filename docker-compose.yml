@@ -8,9 +8,8 @@ services:
       - ./state:/app/.state
     environment:
       TZ: ${TZ:-Asia/Shanghai}
-      READ_NUM: ${READ_NUM:-40}
-      WXREAD_BOOK_URL: ${WXREAD_BOOK_URL:-}
-      WEREAD_API_KEY: ${WEREAD_API_KEY:-}
+      READ_NUM: ${READ_NUM:-240}
+      WXREAD_BOOK_URL: ${WXREAD_BOOK_URL:-25615385}
       WXREAD_QR_PASSWORD: ${WXREAD_QR_PASSWORD:-}
       WXREAD_REPOSITORY: ${WXREAD_REPOSITORY:-RizumuSakura/wxread}
       CRON_SCHEDULE: ${CRON_SCHEDULE:-0 1 * * *}

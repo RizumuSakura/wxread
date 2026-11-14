@@ -16,11 +16,11 @@ class FeatureScopeTests(unittest.TestCase):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
         for removed in ("指定书籍查询", "官方阅读统计", "查询指定书籍", "official_skill.py", "resume_run_id", "WXREAD_LOGIN_OTP"):
             self.assertNotIn(removed, text)
-        for section in ("GitHub Actions", "READ_NUM", "故障排查", "个人书架", "二维码"):
+        for section in ("GitHub Actions", "READ_NUM", "故障排查", "被讨厌的勇气", "二维码"):
             self.assertIn(section, text)
 
     def test_runtime_imports_and_docker_copy_sources_exist(self):
-        for filename in ("main.py", "config.py", "weread_auth.py", "weread_shelf.py", "actions_login.py", "login_store.py", "scheduler.py"):
+        for filename in ("main.py", "config.py", "weread_auth.py", "actions_login.py", "login_store.py", "scheduler.py"):
             tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
             for item in ast.walk(tree):
                 if isinstance(item, ast.ImportFrom):
