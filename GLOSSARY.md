@@ -17,3 +17,6 @@
 | 检查点 / checkpoint | ~~`progress_guard.checkpoint()`~~ | 已移除；现在只有运行结束时的 cache save |
 | 书架循环 | ~~`weread_shelf`~~ | 已移除；曾用官方 Skill `/shelf/sync` 循环多本书 |
 | 默认书 | `config.DEFAULT_BOOK_ID` = `25615385` | 《被讨厌的勇气》，未配置 `WXREAD_BOOK_URL` 时的目标 |
+| 凌晨窗口 | `start_window.window_delay()` | 01:00–05:00 CST 半开区间；窗口前等到 01:00，白天到达则跳过本次 |
+| 跳过 / skip | `start_window.wait_for_window()` → `window_ok=false` | 队列把运行推到白天时放弃这一轮，不算失败，次日重来 |
+| 强制运行 | `WXREAD_FORCE_WINDOW`、`inputs.force` | 手动触发时忽略窗口限制立即跑，仅用于验证 |

@@ -67,6 +67,21 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual([item["cron"] for item in self.reading["on"]["schedule"]], ["7 13 * * *"])
         self.assertEqual(self.reading["concurrency"]["group"], "wxread-session-${{ github.repository }}")
 
+    def test_reading_waits_for_the_early_morning_window(self):
+        steps = self.reading["jobs"]["deploy"]["steps"]
+        window = next(item for item in steps if item.get("id") == "window")
+        self.assertEqual(window["name"], "Wait for the early-morning window")
+        self.assertEqual(window["run"], "python start_window.py")
+        self.assertEqual(window["env"], {"WXREAD_FORCE_WINDOW": "${{ inputs.force }}"})
+        self.assertEqual(window["timeout-minutes"], "300")
+        reading = next(item for item in steps if item.get("name", "").startswith("Run reading task"))
+        self.assertEqual(reading["if"], "${{ steps.window.outputs.window_ok == 'true' }}")
+        self.assertLess(steps.index(window), steps.index(reading))
+        self.assertEqual(self.reading["jobs"]["deploy"]["timeout-minutes"], "480")
+        force = self.reading["on"]["workflow_dispatch"]["inputs"]["force"]
+        self.assertEqual((force["type"], force["default"]), ("boolean", "false"))
+        self.assertTrue((ROOT / "start_window.py").is_file())
+
     def test_cloud_login_migrates_the_v2_cache_without_a_password_derived_key(self):
         steps = self.reading["jobs"]["deploy"]["steps"]
         migrate = next(item for item in steps if item.get("name", "").startswith("Migrate the v2"))

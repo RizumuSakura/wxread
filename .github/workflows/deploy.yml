@@ -8,6 +8,10 @@ on:
     - cron: '7 13 * * *'
   workflow_dispatch:
     inputs:
+      force:
+        description: 忽略凌晨窗口，立即运行（默认只在 01:00–05:00 CST 运行）
+        type: boolean
+        default: false
       check_auth:
         description: 仅验证 Cookie 续期（不阅读、不推送）
         type: boolean
@@ -36,7 +40,8 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    # 最多睡 5 小时等窗口，再跑 121 分钟阅读。
+    timeout-minutes: 480
     environment: AutoRead
     env:
       PYTHONUNBUFFERED: '1'
@@ -79,7 +84,15 @@ jobs:
           key: ${{ steps.cache.outputs.legacy_cache_prefix }}${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ${{ steps.cache.outputs.legacy_cache_prefix }}
 
+      - name: Wait for the early-morning window
+        id: window
+        timeout-minutes: 300
+        env:
+          WXREAD_FORCE_WINDOW: ${{ inputs.force }}
+        run: python start_window.py
+
       - name: Run reading task or renewal-only check
+        if: ${{ steps.window.outputs.window_ok == 'true' }}
         timeout-minutes: 330
         env:
           WXREAD_BOOK_URL: ${{ inputs.book_url || vars.WXREAD_BOOK_URL }}
