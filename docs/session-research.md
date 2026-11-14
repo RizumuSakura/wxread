@@ -31,7 +31,8 @@ pclts 在 SSR 默认是 0，由浏览器挂载时把当前 Unix 秒数编码后�
 | [云端扫码](https://github.com/RizumuSakura/wxread/actions/runs/42433489629) | 账号校验与加密缓存保存成功 |
 | [跨任务恢复与续期](https://github.com/RizumuSakura/wxread/actions/runs/42433975502) | 恢复扫码运行的缓存并成功续期 |
 | [指定书籍 30 秒](https://github.com/RizumuSakura/wxread/actions/runs/42434410299) | bookId=25615385，实际等待一段，返回成功与 synckey |
-| [240 段实测](https://github.com/RizumuSakura/wxread/actions/runs/43519775809) | 96 段 / 3497 秒，折合 36.4 秒每段 |
+| [240 段实测](https://github.com/RizumuSakura/wxread/actions/runs/43519775809) | 96 段 / 3497 秒，折合 36.4 秒每段（旧版带动进度保护） |
+| [改造后 5 段实测](https://github.com/RizumuSakura/wxread/actions/runs/43567406853) | 5 段 / 151.6 秒，折合 30.3 秒每段；起点 45%、章节位置 397，全程无冲突、无恢复记录 |
 
 以上接口确认不代表排行榜或客户端一定认可相同秒数；数周有效性与服务端累计口径未验证。
 
