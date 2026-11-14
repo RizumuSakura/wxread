@@ -1,14 +1,21 @@
-"""Hold the scheduled run until the early-morning window in Asia/Shanghai.
+﻿"""Hold the scheduled run until exactly 01:00 Asia/Shanghai.
 
-GitHub 的 schedule 队列没有准时保证：同一个 `cron: '7 13 * * *'`（21:07 CST）
-实测会被推迟 4–7.5 小时才启动。这个脚本把不确定性收敛成一个确定结果：
+GitHub 的 schedule 队列没有准时保证：同一个 cron 实测会被推迟 4–7.5 小时才启动，
+所以时间不能交给 cron 表达，只能分两步钉死：
 
-    01:00–05:00 CST  立即开始
-    20:00–24:00 CST  睡到次日 01:00 再开始
-    00:00–01:00 CST  睡到当日 01:00 再开始
-    05:00–20:00 CST  放弃本次运行（再跑两小时会撞上白天读书）
+    window job   cron '47 8 * * *'（16:47 CST），到达时刻实测 20:42–00:19（CST）
+                 └─ 睡到 00:30 就交棒（WXREAD_WAKE_LEAD_SECONDS=1800），
+                    只吸走长等待，不占用阅读 job 的 6 小时上限。
 
-放弃只是跳过，不报错：下一次定时任务会重新进窗口。
+    deploy job   gate 步骤再对一次时，睡到 01:00:00 整，然后立刻开始阅读。
+
+判定规则（Asia/Shanghai，UTC+8）：
+
+    到达 < 00:30       睡到 00:30 交棒（长等待止于此，上限 300 分钟）
+    00:30 ≤ 到达 < 01:00  已到交棒点，立即返回；由 deploy 的 gate 等到 01:00:00
+    01:00 ≤ 到达 < 05:00  队列迟到，立即开始（日志打印迟到了多少分钟）
+    到达 ≥ 05:00       放弃本次运行（再跑两小时会撞上白天读书）
+    到达太早（> 300 分钟）  放弃本次运行
 """
 
 from __future__ import annotations
@@ -19,12 +26,16 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
-WINDOW_START_HOUR = 1
-WINDOW_END_HOUR = 5
-SLEEP_FROM_HOUR = 20
+TARGET_HOUR = 1
+LATE_WINDOW_END_HOUR = 5
+MAX_WAIT_SECONDS = 300 * 60
+LEAD_ENV = "WXREAD_WAKE_LEAD_SECONDS"
 FORCE_ENV = "WXREAD_FORCE_WINDOW"
 
-_LOG = lambda message: print(message, flush=True)
+_Clock = Callable[[], datetime]
+_Log = Callable[[str], None]
+
+_LOG: _Log = lambda message: print(message, flush=True)
 
 
 def china_tz() -> timezone:
@@ -32,48 +43,107 @@ def china_tz() -> timezone:
     return timezone(timedelta(hours=8), "Asia/Shanghai")
 
 
-def window_delay(now: datetime) -> Optional[float]:
-    """返回开始前需要等待的秒数；`None` 表示本次应当跳过。"""
-    current = now.astimezone(china_tz())
-    hour = current.hour
-    if WINDOW_START_HOUR <= hour < WINDOW_END_HOUR:
-        return 0.0
-    if WINDOW_START_HOUR <= hour < SLEEP_FROM_HOUR:
-        return None
-    day = current if hour < WINDOW_START_HOUR else current + timedelta(days=1)
-    target = day.replace(
-        hour=WINDOW_START_HOUR, minute=0, second=0, microsecond=0
+def wake_lead_seconds() -> int:
+    """前置 job 提前交棒的秒数；0 表示一直等到 01:00:00。"""
+    raw = (os.getenv(LEAD_ENV) or "0").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        raise RuntimeError(f"{LEAD_ENV} 必须是整数秒，收到：{raw!r}") from None
+    if value < 0:
+        raise RuntimeError(f"{LEAD_ENV} 不能为负，收到：{value}")
+    return value
+
+
+def day_target(now: datetime) -> datetime:
+    """当天（CST 日历日）的 01:00:00，用于计算迟到了多少分钟。"""
+    return now.astimezone(china_tz()).replace(
+        hour=TARGET_HOUR, minute=0, second=0, microsecond=0
     )
-    return max(0.0, (target - current).total_seconds())
+
+
+def window_target(now: datetime, lead_seconds: int = 0) -> datetime:
+    """本次应当启动（或交棒）的绝对时刻：最近的 01:00:00 减去提前量。"""
+    current = now.astimezone(china_tz())
+    day = current if current.hour < TARGET_HOUR else current + timedelta(days=1)
+    target = day.replace(hour=TARGET_HOUR, minute=0, second=0, microsecond=0)
+    return target - timedelta(seconds=lead_seconds)
+
+
+def window_delay(now: datetime, lead_seconds: int = 0) -> Optional[float]:
+    """返回距离目标时刻还需等待的秒数；`None` 表示本次应当跳过。"""
+    current = now.astimezone(china_tz())
+    if TARGET_HOUR <= current.hour < LATE_WINDOW_END_HOUR:
+        return 0.0
+    delay = (window_target(current, lead_seconds) - current).total_seconds()
+    if delay > MAX_WAIT_SECONDS:
+        return None
+    return max(0.0, delay)
+
+
+def sleep_until(
+    target: datetime,
+    clock: _Clock,
+    sleep: Callable[[float], None],
+    log: _Log,
+) -> None:
+    """分段睡眠直到 `target`，每次醒来都重新对时，避免一次性长睡漂移。"""
+    while True:
+        remaining = (target - clock().astimezone(china_tz())).total_seconds()
+        if remaining <= 0:
+            return
+        log(
+            f"距离 {target:%H:%M:%S}（CST）还有 "
+            f"{int(remaining // 60)} 分 {int(remaining % 60)} 秒，继续等待。"
+        )
+        sleep(remaining)
 
 
 def wait_for_window(
     now: Optional[datetime] = None,
     sleep: Callable[[float], None] = time.sleep,
-    log: Callable[[str], None] = _LOG,
+    log: _Log = _LOG,
+    clock: Optional[_Clock] = None,
+    lead_seconds: Optional[int] = None,
 ) -> bool:
-    """等到窗口回到 True，判断本次该跳过时返回 False。"""
+    """等到目标时刻再返回 True；判断本次该跳过时返回 False。"""
     if (os.getenv(FORCE_ENV) or "").strip().lower() == "true":
-        log("已指定强制运行，忽略凌晨窗口限制。")
+        log("已指定强制运行，忽略凌晨 01:00 的时间限制。")
         return True
-    current = now or datetime.now(timezone.utc)
-    delay = window_delay(current)
+    lead = wake_lead_seconds() if lead_seconds is None else lead_seconds
+    tick: _Clock = clock or (lambda: datetime.now(timezone.utc))
+    current = now or tick()
+    target = window_target(current, lead)
+    delay = window_delay(current, lead)
     stamp = current.astimezone(china_tz()).strftime("%Y-%m-%d %H:%M:%S")
     if delay is None:
-        log(f"当前 {stamp}（CST）不在凌晨窗口，跳过本次运行，等待下一次定时任务。")
+        log(
+            f"当前 {stamp}（CST）距离最近的 01:00:00 超过 {MAX_WAIT_SECONDS // 60} 分钟，"
+            "跳过本次运行，等待下一次定时任务。"
+        )
         return False
     if delay <= 0:
-        log(f"当前 {stamp}（CST）已在凌晨窗口，立即开始。")
+        if TARGET_HOUR <= current.astimezone(china_tz()).hour < LATE_WINDOW_END_HOUR:
+            late = int(
+                (
+                    current.astimezone(china_tz()) - day_target(current)
+                ).total_seconds()
+                // 60
+            )
+            log(f"当前 {stamp}（CST）已过 01:00:00，队列迟到 {late} 分钟，立即开始。")
+        else:
+            log(f"当前 {stamp}（CST）已到交棒时刻，交由下一阶段等到 01:00:00 开始。")
         return True
     log(
-        f"当前 {stamp}（CST）尚未进入凌晨窗口，等待 {int(delay // 60)} 分钟后开始。"
+        f"当前 {stamp}（CST）等待到 {target:%Y-%m-%d %H:%M:%S}（CST），"
+        f"共 {int(delay // 60)} 分 {int(delay % 60)} 秒。"
     )
-    sleep(delay)
+    sleep_until(target, tick, sleep, log)
     return True
 
 
 def publish(ok: bool) -> None:
-    """把结果写进 GITHUB_OUTPUT，供后续步骤判断。"""
+    """把结果写进 GITHUB_OUTPUT，供后续步骤 / job 判断。"""
     target = os.getenv("GITHUB_OUTPUT")
     line = f"window_ok={'true' if ok else 'false'}\n"
     if not target:

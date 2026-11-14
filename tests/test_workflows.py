@@ -64,23 +64,45 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse((ROOT / ".github/actions/reading").exists())
 
     def test_schedule_is_pinned_for_a_late_github_queue(self):
-        self.assertEqual([item["cron"] for item in self.reading["on"]["schedule"]], ["7 13 * * *"])
+        self.assertEqual([item["cron"] for item in self.reading["on"]["schedule"]], ["47 8 * * *"])
         self.assertEqual(self.reading["concurrency"]["group"], "wxread-session-${{ github.repository }}")
 
-    def test_reading_waits_for_the_early_morning_window(self):
+    def test_long_wait_is_split_into_its_own_job_before_the_reading_job(self):
+        window = self.reading["jobs"]["window"]
+        deploy = self.reading["jobs"]["deploy"]
+        self.assertEqual(window["outputs"], {"window_ok": "${{ steps.gate.outputs.window_ok }}"})
+        self.assertEqual(deploy["needs"], "window")
+        self.assertEqual(deploy["if"], "${{ needs.window.outputs.window_ok == 'true' }}")
+        # 6 小时硬上限：两个 job 各自留足预算。
+        self.assertLessEqual(int(window["timeout-minutes"]), 360)
+        self.assertLessEqual(int(deploy["timeout-minutes"]), 360)
+
+    def test_window_job_sleeps_to_the_handoff_point(self):
+        steps = self.reading["jobs"]["window"]["steps"]
+        gate = next(item for item in steps if item.get("id") == "gate")
+        self.assertEqual(gate["run"], "python start_window.py")
+        self.assertEqual(
+            gate["env"],
+            {
+                "WXREAD_FORCE_WINDOW": "${{ inputs.force }}",
+                "WXREAD_WAKE_LEAD_SECONDS": "1800",
+            },
+        )
+        self.assertEqual(gate["timeout-minutes"], "320")
+
+    def test_deploy_reweaves_the_clock_to_exactly_one(self):
         steps = self.reading["jobs"]["deploy"]["steps"]
-        window = next(item for item in steps if item.get("id") == "window")
-        self.assertEqual(window["name"], "Wait for the early-morning window")
-        self.assertEqual(window["run"], "python start_window.py")
-        self.assertEqual(window["env"], {"WXREAD_FORCE_WINDOW": "${{ inputs.force }}"})
-        self.assertEqual(window["timeout-minutes"], "300")
+        gate = next(item for item in steps if item.get("name", "").startswith("Wait until exactly 01:00"))
+        self.assertEqual(gate["run"], "python start_window.py")
+        self.assertEqual(gate["env"], {"WXREAD_FORCE_WINDOW": "${{ inputs.force }}"})
         reading = next(item for item in steps if item.get("name", "").startswith("Run reading task"))
-        self.assertEqual(reading["if"], "${{ steps.window.outputs.window_ok == 'true' }}")
-        self.assertLess(steps.index(window), steps.index(reading))
-        self.assertEqual(self.reading["jobs"]["deploy"]["timeout-minutes"], "480")
+        self.assertEqual(reading["if"], "${{ steps.gate.outputs.window_ok == 'true' }}")
+        self.assertLess(steps.index(gate), steps.index(reading))
+        self.assertTrue((ROOT / "start_window.py").is_file())
+
+    def test_force_input_is_a_boolean_defaulting_to_off(self):
         force = self.reading["on"]["workflow_dispatch"]["inputs"]["force"]
         self.assertEqual((force["type"], force["default"]), ("boolean", "false"))
-        self.assertTrue((ROOT / "start_window.py").is_file())
 
     def test_cloud_login_migrates_the_v2_cache_without_a_password_derived_key(self):
         steps = self.reading["jobs"]["deploy"]["steps"]

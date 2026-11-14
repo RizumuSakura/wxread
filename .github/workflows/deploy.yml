@@ -3,13 +3,14 @@ run-name: ${{ inputs.check_auth && '仅验证登录续期' || '固定书籍阅�
 
 on:
   schedule:
-    # 21:07 Asia/Shanghai. GitHub 的 schedule 队列实测延迟 4–7.5 小时，
-    # 声明在这里是为了让任务落在凌晨 01:00–04:30（CST）而不是早上 6 点后。
-    - cron: '7 13 * * *'
+    # 16:47 Asia/Shanghai。GitHub 的 schedule 队列实测会延迟 4–7.5 小时，
+    # cron 只负责"早到"，真正的启动时刻由 start_window.py 钉到 01:00:00。
+    # 延迟后的到达时刻：20:44–00:17（CST），都在 01:00 之前。
+    - cron: '47 8 * * *'
   workflow_dispatch:
     inputs:
       force:
-        description: 忽略凌晨窗口，立即运行（默认只在 01:00–05:00 CST 运行）
+        description: 忽略 01:00 的时间限制，立即运行
         type: boolean
         default: false
       check_auth:
@@ -38,10 +39,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  # 只做长等待：队列早到几小时由它吸收，交棒时刻 00:30（CST）。
+  # 单独成 job 是为了不占用阅读 job 的 6 小时上限。
+  window:
+    name: Wait for the night window
     runs-on: ubuntu-latest
-    # 最多睡 5 小时等窗口，再跑 121 分钟阅读。
-    timeout-minutes: 480
+    timeout-minutes: 330
+    outputs:
+      window_ok: ${{ steps.gate.outputs.window_ok }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Sleep until the handoff point
+        id: gate
+        # 最长睡 240 分钟（start_window.MAX_WAIT_SECONDS），再留出对时误差。
+        timeout-minutes: 320
+        env:
+          WXREAD_FORCE_WINDOW: ${{ inputs.force }}
+          WXREAD_WAKE_LEAD_SECONDS: '1800'
+        run: python start_window.py
+
+  deploy:
+    needs: window
+    if: ${{ needs.window.outputs.window_ok == 'true' }}
+    runs-on: ubuntu-latest
+    # 01:00:00 起跑 121 分钟 + 安装依赖与网络重试余量；上限 400 段约 205 分钟。
+    timeout-minutes: 260
     environment: AutoRead
     env:
       PYTHONUNBUFFERED: '1'
@@ -84,16 +109,17 @@ jobs:
           key: ${{ steps.cache.outputs.legacy_cache_prefix }}${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ${{ steps.cache.outputs.legacy_cache_prefix }}
 
-      - name: Wait for the early-morning window
-        id: window
-        timeout-minutes: 300
+      # 最后一步对时：睡到 01:00:00 整，再在同一秒开始阅读。
+      - name: Wait until exactly 01:00 CST
+        id: gate
+        timeout-minutes: 40
         env:
           WXREAD_FORCE_WINDOW: ${{ inputs.force }}
         run: python start_window.py
 
       - name: Run reading task or renewal-only check
-        if: ${{ steps.window.outputs.window_ok == 'true' }}
-        timeout-minutes: 330
+        if: ${{ steps.gate.outputs.window_ok == 'true' }}
+        timeout-minutes: 215
         env:
           WXREAD_BOOK_URL: ${{ inputs.book_url || vars.WXREAD_BOOK_URL }}
           READ_NUM: ${{ inputs.read_num || vars.READ_NUM }}

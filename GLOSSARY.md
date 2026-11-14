@@ -17,6 +17,9 @@
 | 检查点 / checkpoint | ~~`progress_guard.checkpoint()`~~ | 已移除；现在只有运行结束时的 cache save |
 | 书架循环 | ~~`weread_shelf`~~ | 已移除；曾用官方 Skill `/shelf/sync` 循环多本书 |
 | 默认书 | `config.DEFAULT_BOOK_ID` = `25615385` | 《被讨厌的勇气》，未配置 `WXREAD_BOOK_URL` 时的目标 |
-| 凌晨窗口 | `start_window.window_delay()` | 01:00–05:00 CST 半开区间；窗口前等到 01:00，白天到达则跳过本次 |
+| 凌晨窗口 | `start_window.window_delay()` | 01:00–05:00 CST 半开区间；窗口前等到目标时刻，白天到达则跳过本次 |
+| 交棒点 | `start_window.wake_lead_seconds()`、`WXREAD_WAKE_LEAD_SECONDS` | 前一个 job 提前交出的时刻；定时链路里是 00:30:00（01:00 减 1800 秒） |
+| 等待上限 | `start_window.MAX_WAIT_SECONDS` = 300 分钟 | 距离目标超过这个值就跳过本次运行，不空等到天亮 |
+| 迟到 | `start_window.wait_for_window()` 的迟到分支 | 已在 01:00–05:00 内到达：立即开始，并在日志里报出迟到分钟数 |
 | 跳过 / skip | `start_window.wait_for_window()` → `window_ok=false` | 队列把运行推到白天时放弃这一轮，不算失败，次日重来 |
 | 强制运行 | `WXREAD_FORCE_WINDOW`、`inputs.force` | 手动触发时忽略窗口限制立即跑，仅用于验证 |
